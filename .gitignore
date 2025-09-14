@@ -101,3 +101,5 @@ sam1_regions/
 *.jpg
 *.png
 *.npy
+# installers
+Miniconda3-*.sh
