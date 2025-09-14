@@ -89,3 +89,15 @@ temp/
 *.gif
 
 
+checkpoints/
+results/
+sam1_regions/
+*.pt
+*.pth
+*.ckpt
+*.mp4
+*.avi
+*.mov
+*.jpg
+*.png
+*.npy
