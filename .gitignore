@@ -1,0 +1,91 @@
+# =============================
+# Python
+# =============================
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# =============================
+# Jupyter Notebook
+# =============================
+.ipynb_checkpoints/
+
+# =============================
+# IDE / Editor
+# =============================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =============================
+# OS Files
+# =============================
+.DS_Store
+Thumbs.db
+
+# =============================
+# Logs
+# =============================
+*.log
+logs/
+*.out
+*.err
+
+# =============================
+# Environment / Virtual Env
+# =============================
+.env
+.venv/
+venv/
+env/
+*.env
+
+# =============================
+# Data & Checkpoints
+# =============================
+data/
+datasets/
+*.csv
+*.tsv
+*.json
+*.yaml
+*.yml
+*.xml
+*.parquet
+
+# =============================
+# Model Weights / Large Files
+# =============================
+*.ckpt
+*.h5
+*.hdf5
+*.pth
+*.pt
+*.onnx
+*.tflite
+*.pb
+*.weights
+
+# =============================
+# Outputs / Results / Cache
+# =============================
+outputs/
+results/
+cache/
+tmp/
+temp/
+*.mp4
+*.avi
+*.mov
+*.jpg
+*.jpeg
+*.png
+*.gif
+
+
