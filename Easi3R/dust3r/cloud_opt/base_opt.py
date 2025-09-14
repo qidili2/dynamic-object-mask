@@ -33,11 +33,13 @@ import cv2
 from sam2.build_sam import build_sam2
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+from sam2.build_sam import build_sam2_video_predictor
 import glob
 from time import perf_counter as _now
 import csv
 import re
 from collections import defaultdict
+import uuid
 
 def c2w_to_tumpose(c2w):
     """
@@ -1095,26 +1097,20 @@ class BasePCOptimizer (nn.Module):
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{video_mask_path}"')
-
+    
     @torch.no_grad()
     def generate_region_groups_with_tracking(
         self,
-        proposal_backend="sam1",  
-        reinit_every=10,          
-        min_size=100,             
-        iou_new_thr=0.20,         
-        vis_dir=None              
+        proposal_backend="sam1",  # "sam1" | "sam2" ；用哪个做 proposals（追踪始终用 sam2）
+        reinit_every=10,          # 每隔多少帧重新做一次 proposals，并把新的 region 并入并重新传播
+        min_size=100,             # proposal 最小面积（像素）
+        iou_new_thr=0.20,         # 与当前帧已追踪到的任意 mask 的 IoU 低于该阈值 → 视作新 region
+        vis_dir=None              # 可选：保存可视化与 groups_npy
     ):
-        """
-        带容错处理的region tracking方法
-        """
-        import os, glob, uuid, cv2, numpy as np, torch
-        import tempfile, shutil
 
         device = self.device if torch.cuda.is_available() else "cpu"
         H, W = self.imshapes[0]
 
-        # ------- 小工具 -------
         def _ensure_vis_dirs(root):
             if not root: return None
             os.makedirs(os.path.join(root, "overlays"), exist_ok=True)
@@ -1133,7 +1129,6 @@ class BasePCOptimizer (nn.Module):
             return np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=np.float32)
 
         def _extract_rgb(frame_like):
-            """统一把帧转成 HxWx3 uint8 RGB；兼容 dict / torch / numpy / CHW / HWC / 灰度 / [0,1] / [0,255]"""
             fr = frame_like
             if isinstance(fr, dict):
                 for k in ("image", "img", "frame", "rgb", "data"):
@@ -1154,327 +1149,195 @@ class BasePCOptimizer (nn.Module):
                 fr = np.clip(fr * scale, 0, 255).astype(np.uint8)
             return fr  # HxWx3, uint8, RGB
 
-        def _safe_dump_frames_to_tmp(tmp_dir):
-            """安全地保存帧到临时目录"""
-            try:
-                os.makedirs(tmp_dir, exist_ok=True)
-                saved_paths = []
-                
+        def _dump_frames_to_tmp(tmp_dir):
+            os.makedirs(tmp_dir, exist_ok=True)
+            def _ls():
+                return sorted(
+                    glob.glob(os.path.join(tmp_dir, "*.png"))
+                    + glob.glob(os.path.join(tmp_dir, "*.jpg"))
+                    + glob.glob(os.path.join(tmp_dir, "*.jpeg"))
+                )
+            cur = _ls()
+            if len(cur) != self.n_imgs:
+                for p in cur:
+                    try: os.remove(p)
+                    except: pass
                 for i in range(self.n_imgs):
+                    rgb = _extract_rgb(self.imgs[i])
+                    outp = os.path.join(tmp_dir, f"{i:05d}.jpg")
+                    ok = cv2.imwrite(outp, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                    if not ok:
+                        raise RuntimeError(f"[SAM2] imwrite failed at frame {i}: {outp}")
+            cur = _ls()
+            if len(cur) != self.n_imgs:
+                raise RuntimeError(f"[SAM2] tmp dir write failed: {tmp_dir} (have {len(cur)}/{self.n_imgs})")
+            print(f"[SAM2] tmp frames ready: {len(cur)} at {tmp_dir}")
+
+        def _collect_all_masks_from_state(inf_state, n_frames):
+            """返回列表长度 n_frames"""
+            out = [dict() for _ in range(n_frames)]
+            video_segments = getattr(inf_state, "video_segments", None)
+            if video_segments is None or len(video_segments) != n_frames:
+                raise RuntimeError("[SAM2] 无法从 inference_state 中提取 masks（缺少 video_segments 或长度不匹配）")
+            for f in range(n_frames):
+                segs = video_segments[f]
+                if not isinstance(segs, dict): 
                     try:
-                        rgb = _extract_rgb(self.imgs[i])
-                        outp = os.path.join(tmp_dir, f"{i:05d}.jpg")
-                        ok = cv2.imwrite(outp, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-                        if ok:
-                            saved_paths.append(outp)
-                        else:
-                            print(f"[WARN] Failed to write frame {i}, creating placeholder")
-                            # 创建黑色占位符
-                            placeholder = np.zeros((H, W, 3), dtype=np.uint8)
-                            cv2.imwrite(outp, placeholder)
-                            saved_paths.append(outp)
-                    except Exception as e:
-                        print(f"[WARN] Frame {i} processing failed: {e}, creating placeholder")
-                        placeholder = np.zeros((H, W, 3), dtype=np.uint8)
-                        outp = os.path.join(tmp_dir, f"{i:05d}.jpg")
-                        cv2.imwrite(outp, placeholder)
-                        saved_paths.append(outp)
-                
-                print(f"[SAM2] Saved {len(saved_paths)} frames to {tmp_dir}")
-                return len(saved_paths) == self.n_imgs
-                
-            except Exception as e:
-                print(f"[ERROR] Failed to dump frames: {e}")
-                return False
+                        seg_items = dict(segs)
+                    except Exception:
+                        raise RuntimeError(f"[SAM2] video_segments[{f}] 类型不支持：{type(segs)}")
+                else:
+                    seg_items = segs
+
+                for k, rec in seg_items.items():
+                    obj_id = int(k)
+                    m = rec.get("mask", None) if isinstance(rec, dict) else getattr(rec, "mask", None)
+                    if m is None:  
+                        m = rec.get("masks", None) if isinstance(rec, dict) else getattr(rec, "masks", None)
+                        if m is None: 
+                            continue
+                        if hasattr(m, "detach"): m = m.detach().cpu().float().numpy()
+                        m = np.asarray(m)
+                        if m.ndim == 3: 
+                            m = m[0]
+                    else:
+                        if hasattr(m, "detach"): m = m.detach().cpu().float().numpy()
+                        m = np.asarray(m)
+
+                    if m.dtype != bool:
+                        thr = 0.5 * float(m.max()) if m.size else 0.0
+                        m = (m > thr)
+                    out[f][obj_id] = m.astype(bool)
+            return out
 
         def _write_groups_frame(frame_idx, per_tid_masks: dict):
-            """写入一帧的group结果"""
             group_ids = np.zeros((H, W), dtype=np.int32)
             for tid, m in per_tid_masks.items():
                 group_ids[m] = tid
             self.region_groups_tracked.append(torch.from_numpy(group_ids).long().to(device))
-            
             if vis_dir:
-                try:
-                    rgb = _extract_rgb(self.imgs[frame_idx])
-                    color = np.zeros((H, W, 3), np.uint8)
-                    for tid in sorted(per_tid_masks.keys()):
-                        color[per_tid_masks[tid]] = (37 * tid % 255, 17 * tid % 255, 93 * tid % 255)
-                    overlay = cv2.addWeighted(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), 0.6, color, 0.4, 0)
-                    cv2.imwrite(os.path.join(vis_dir, "overlays", f"frame_{frame_idx:04d}.png"), overlay)
-                    cv2.imwrite(os.path.join(vis_dir, "groups", f"frame_{frame_idx:04d}.png"),
-                                cv2.cvtColor(color, cv2.COLOR_RGB2BGR))
-                    np.save(os.path.join(vis_dir, "groups_npy", f"group_{frame_idx:04d}.npy"), group_ids)
-                except Exception as e:
-                    print(f"[WARN] Visualization failed for frame {frame_idx}: {e}")
-
-        def _fallback_optical_flow_tracking():
-            """如果SAM2失败，使用光流跟踪作为备选方案"""
-            print("[SAM2] Falling back to optical flow tracking")
-            
-            # 生成第0帧的proposals
-            img0 = _extract_rgb(self.imgs[0])
-            props0 = proposal_gen.generate(img0)
-            props0 = sorted(props0, key=lambda p: p["area"], reverse=True)
-            
-            # 初始化tracks
-            next_tid = 1
-            current_masks = {}
-            
-            for p in props0:
-                m = p["segmentation"].astype(bool)
-                if m.sum() < min_size:
-                    continue
-                current_masks[next_tid] = m
-                next_tid += 1
-            
-            _write_groups_frame(0, current_masks)
-            
-            # 光流传播
-            for f in range(1, self.n_imgs):
-                prev_rgb = _extract_rgb(self.imgs[f-1])
-                curr_rgb = _extract_rgb(self.imgs[f])
-                
-                # 使用简单的光流传播现有masks
-                propagated_masks = {}
-                
-                try:
-                    # 计算光流
-                    prev_gray = cv2.cvtColor(prev_rgb, cv2.COLOR_RGB2GRAY)
-                    curr_gray = cv2.cvtColor(curr_rgb, cv2.COLOR_RGB2GRAY)
-                    flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-                    
-                    for tid, prev_mask in current_masks.items():
-                        # 使用光流warping传播mask
-                        h, w = prev_mask.shape
-                        grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
-                        map_x = (grid_x + flow[..., 0]).astype(np.float32)
-                        map_y = (grid_y + flow[..., 1]).astype(np.float32)
-                        
-                        mask_u8 = (prev_mask.astype(np.uint8) * 255)
-                        warped = cv2.remap(mask_u8, map_x, map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT)
-                        warped_mask = (warped > 127)
-                        
-                        if warped_mask.sum() >= min_size * 0.3:  # 保留大小合理的mask
-                            propagated_masks[tid] = warped_mask
-                            
-                except Exception as e:
-                    print(f"[WARN] Optical flow failed for frame {f}: {e}")
-                    # 如果光流失败，直接复制上一帧的masks（退化方案）
-                    propagated_masks = {tid: mask for tid, mask in current_masks.items()}
-                
-                # 每reinit_every帧添加新的proposals
-                if f % reinit_every == 0:
-                    try:
-                        props = proposal_gen.generate(curr_rgb)
-                        props = sorted(props, key=lambda p: p["area"], reverse=True)
-                        
-                        existing_masks = list(propagated_masks.values())
-                        for p in props:
-                            m = p["segmentation"].astype(bool)
-                            if m.sum() < min_size:
-                                continue
-                            # 检查与现有masks的重叠
-                            if existing_masks and max(_mask_iou(m, em) for em in existing_masks) >= iou_new_thr:
-                                continue
-                            propagated_masks[next_tid] = m
-                            next_tid += 1
-                            
-                    except Exception as e:
-                        print(f"[WARN] New proposals failed for frame {f}: {e}")
-                
-                current_masks = propagated_masks
-                _write_groups_frame(f, current_masks)
+                rgb = _extract_rgb(self.imgs[frame_idx])
+                color = np.zeros((H, W, 3), np.uint8)
+                for tid in sorted(per_tid_masks.keys()):
+                    color[per_tid_masks[tid]] = (37 * tid % 255, 17 * tid % 255, 93 * tid % 255)
+                overlay = cv2.addWeighted(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), 0.6, color, 0.4, 0)
+                cv2.imwrite(os.path.join(vis_dir, "overlays", f"frame_{frame_idx:04d}.png"), overlay)
+                cv2.imwrite(os.path.join(vis_dir, "groups",   f"frame_{frame_idx:04d}.png"),
+                            cv2.cvtColor(color, cv2.COLOR_RGB2BGR))
+                np.save(os.path.join(vis_dir, "groups_npy", f"group_{frame_idx:04d}.npy"), group_ids)
 
         vis_dir = _ensure_vis_dirs(vis_dir)
 
-        # ------- proposals 生成器 -------
-        try:
-            if proposal_backend == "sam1":
-                from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
-                sam_ckpt = "third_party/segment-anything/checkpoints/sam_vit_l_0b3195.pth"
-                sam = sam_model_registry["vit_l"](checkpoint=sam_ckpt).to(device)
-                sam.eval()
-                proposal_gen = SamAutomaticMaskGenerator(
-                    sam, crop_n_layers=0, pred_iou_thresh=0.75, output_mode="binary_mask"
-                )
-                print("[SAM1] Initialized proposal generator")
-            elif proposal_backend == "sam2":
-                from sam2.build_sam import build_sam2
-                from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-                sam2_amg = build_sam2(
-                    "configs/sam2.1/sam2.1_hiera_l.yaml",
-                    "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
-                    device=device
-                )
-                sam2_amg.eval()
-                proposal_gen = SAM2AutomaticMaskGenerator(
-                    sam2_amg, crop_n_layers=0, pred_iou_thresh=0.75, output_mode="binary_mask"
-                )
-                print("[SAM2] Initialized proposal generator")
-            else:
-                raise ValueError(f"proposal_backend 必须是 'sam1' 或 'sam2'，而不是 {proposal_backend!r}")
-        except Exception as e:
-            print(f"[ERROR] Proposal generator initialization failed: {e}")
-            # 创建空的region groups作为fallback
-            self.region_groups_tracked = []
-            for f in range(self.n_imgs):
-                self.region_groups_tracked.append(torch.zeros((H, W), dtype=torch.long, device=device))
-            self.region_groups = [g.to(self.device) for g in self.region_groups_tracked]
-            return
+        # ------- proposals -------
+        if proposal_backend == "sam1":
+            sam_ckpt = "third_party/segment-anything/checkpoints/sam_vit_l_0b3195.pth"
+            sam = sam_model_registry["vit_l"](checkpoint=sam_ckpt).to(device)
+            sam.eval()
+            proposal_gen = SamAutomaticMaskGenerator(
+                sam, crop_n_layers=0, pred_iou_thresh=0.75, output_mode="binary_mask"
+            )
+        elif proposal_backend == "sam2":
+            sam2_amg = build_sam2(
+                "configs/sam2.1/sam2.1_hiera_l.yaml",
+                "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
+                device=device
+            )
+            sam2_amg.eval()
+            proposal_gen = SAM2AutomaticMaskGenerator(
+                sam2_amg, crop_n_layers=0, pred_iou_thresh=0.75, output_mode="binary_mask"
+            )
+        else:
+            raise ValueError(f"proposal_backend 必须是 'sam1' 或 'sam2'，而不是 {proposal_backend!r}")
 
-        # ------- 尝试 SAM2 Video Predictor -------
-        try:
-            from sam2.build_sam import build_sam2_video_predictor
-            
-            # 设置临时目录
-            if not hasattr(self, "_sam2_tmpdir") or self._sam2_tmpdir is None:
-                base = vis_dir if vis_dir else (getattr(self, "output_dir", None) or tempfile.gettempdir())
-                os.makedirs(base, exist_ok=True)
-                self._sam2_tmpdir = os.path.join(base, f"_sam2_tmp_{uuid.uuid4().hex}")
+        # ------- SAM2 Video Predictor -------
+        
+        predictor = build_sam2_video_predictor(
+            "configs/sam2.1/sam2.1_hiera_l.yaml",
+            "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
+            device=device, dtype=torch.bfloat16, vos_optimized=True
+        )
 
-            # 尝试保存帧
-            if not _safe_dump_frames_to_tmp(self._sam2_tmpdir):
-                raise RuntimeError("Failed to dump frames to temp directory")
+        # 准备视频帧目录
+        if not hasattr(self, "_sam2_tmpdir") or self._sam2_tmpdir is None:
+            base = vis_dir if vis_dir else (getattr(self, "output_dir", None) or ".")
+            os.makedirs(base, exist_ok=True)
+            self._sam2_tmpdir = os.path.join(base, f"_sam2_tmp_{uuid.uuid4().hex}")
+        _dump_frames_to_tmp(self._sam2_tmpdir)
 
-            # 初始化predictor，尝试多种配置
-            predictor = None
-            inf_state = None
-            
-            configs = [
-                {"device": device, "dtype": torch.float32},
-                {"device": "cpu", "dtype": torch.float32}
-            ]
-            
-            for config in configs:
-                try:
-                    print(f"[SAM2] Trying video predictor config: {config}")
-                    predictor = build_sam2_video_predictor(
-                        "configs/sam2.1/sam2.1_hiera_l.yaml",
-                        "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
-                        **config
-                    )
-                    inf_state = predictor.init_state(video_path=self._sam2_tmpdir)
-                    print("[SAM2] Video predictor initialized successfully")
-                    break
-                except Exception as e:
-                    print(f"[SAM2] Config {config} failed: {e}")
-                    predictor = None
-                    inf_state = None
-                    continue
+        # 初始化会话
+        inf_state = predictor.init_state(video_path=self._sam2_tmpdir)
+        print("[SAM2] init_state OK")
 
-            if predictor is None or inf_state is None:
-                raise RuntimeError("All SAM2 configurations failed")
+        # ------- 第 0 帧：做 proposals 并播种到 SAM2 里 ------
+        img0 = _extract_rgb(self.imgs[0])
+        props0 = proposal_gen.generate(img0)
+        props0 = sorted(props0, key=lambda p: p["area"], reverse=True)
 
-            # ------- 第 0 帧：做 proposals 并播种到 SAM2 里 -------
-            img0 = _extract_rgb(self.imgs[0])
-            props0 = proposal_gen.generate(img0)
-            props0 = sorted(props0, key=lambda p: p["area"], reverse=True)
+        next_tid = 1
+        seeded_ids = []  # 记录已播种的 tid
 
-            next_tid = 1
-            seeded_ids = []
+        for p in props0:
+            m = p["segmentation"].astype(bool)
+            if m.sum() < min_size: 
+                continue
+            box = _mask_to_bbox(m)
+            if box is None:
+                continue
+            predictor.add_new_points_or_box(
+                inference_state=inf_state,
+                frame_idx=0,
+                obj_id=int(next_tid),
+                box=box[None, :].astype(np.float32)
+            )
+            seeded_ids.append(int(next_tid))
+            next_tid += 1
 
-            for p in props0:
+        if len(seeded_ids) == 0:
+            raise RuntimeError("[SAM2] 第 0 帧没有可用的 proposals（面积太小？min_size 调低试试）")
+
+        predictor.propagate_in_video(inf_state)
+
+        # ------- 每 reinit_every 帧：补充未被 track 到的新 region，播种并重新传播 -------
+        for f in range(reinit_every, self.n_imgs, reinit_every):
+            # 先收集当前这一帧已有的 mask，用来做 IoU 过滤
+            per_frame = _collect_all_masks_from_state(inf_state, self.n_imgs)[f]
+            existing_masks = list(per_frame.values())
+
+            imgf = _extract_rgb(self.imgs[f])
+            props = proposal_gen.generate(imgf)
+            props = sorted(props, key=lambda p: p["area"], reverse=True)
+
+            new_seed_cnt = 0
+            for p in props:
                 m = p["segmentation"].astype(bool)
                 if m.sum() < min_size:
+                    continue
+                if existing_masks and max(_mask_iou(m, em) for em in existing_masks) >= iou_new_thr:
                     continue
                 box = _mask_to_bbox(m)
                 if box is None:
                     continue
-                
-                try:
-                    predictor.add_new_points_or_box(
-                        inference_state=inf_state,
-                        frame_idx=0,
-                        obj_id=int(next_tid),
-                        box=box[None, :].astype(np.float32)
-                    )
-                    seeded_ids.append(int(next_tid))
-                    next_tid += 1
-                except Exception as e:
-                    print(f"[WARN] Failed to add object {next_tid}: {e}")
+                predictor.add_new_points_or_box(
+                    inference_state=inf_state,
+                    frame_idx=f,
+                    obj_id=int(next_tid),
+                    box=box[None, :].astype(np.float32)
+                )
+                next_tid += 1
+                new_seed_cnt += 1
 
-            if len(seeded_ids) == 0:
-                raise RuntimeError("No valid proposals in frame 0")
+            if new_seed_cnt > 0:
+                predictor.propagate_in_video(inf_state)
 
-            # 执行传播
-            predictor.propagate_in_video(inf_state)
+        per_frame_all = _collect_all_masks_from_state(inf_state, self.n_imgs) 
 
-            # ------- 每 reinit_every 帧：补充未被 track 到的新 region -------
-            for f in range(reinit_every, self.n_imgs, reinit_every):
-                try:
-                    # 先收集当前这一帧已有的 mask，用来做 IoU 过滤
-                    per_frame = _collect_all_masks_from_state(inf_state, self.n_imgs, debug=True)[f]
-                    existing_masks = list(per_frame.values())
+        self.region_groups_tracked = []
+        for f in range(self.n_imgs):
+            masks = {tid: m for tid, m in per_frame_all[f].items() if m.sum() >= int(min_size * 0.3)}
+            _write_groups_frame(f, masks)
 
-                    imgf = _extract_rgb(self.imgs[f])
-                    props = proposal_gen.generate(imgf)
-                    props = sorted(props, key=lambda p: p["area"], reverse=True)
-
-                    new_seed_cnt = 0
-                    for p in props:
-                        m = p["segmentation"].astype(bool)
-                        if m.sum() < min_size:
-                            continue
-                        # 与已有的任意一个 mask 的 IoU 都很小 → 认为是新的
-                        if existing_masks and max(_mask_iou(m, em) for em in existing_masks) >= iou_new_thr:
-                            continue
-                        box = _mask_to_bbox(m)
-                        if box is None:
-                            continue
-                            
-                        try:
-                            predictor.add_new_points_or_box(
-                                inference_state=inf_state,
-                                frame_idx=f,
-                                obj_id=int(next_tid),
-                                box=box[None, :].astype(np.float32)
-                            )
-                            next_tid += 1
-                            new_seed_cnt += 1
-                        except Exception as e:
-                            print(f"[WARN] Failed to add new object at frame {f}: {e}")
-
-                    if new_seed_cnt > 0:
-                        predictor.propagate_in_video(inf_state)
-                        
-                except Exception as e:
-                    print(f"[WARN] Reinit failed at frame {f}: {e}")
-
-            # ------- 统一从会话取回所有帧/对象的 mask，并落实到 self.region_groups -------
-            try:
-                per_frame_all = _collect_all_masks_from_state(inf_state, self.n_imgs, debug=True)
-                
-                self.region_groups_tracked = []
-                for f in range(self.n_imgs):
-                    masks = {tid: m for tid, m in per_frame_all[f].items() if m.sum() >= int(min_size * 0.3)}
-                    _write_groups_frame(f, masks)
-                
-                print(f"[SAM2] Successfully tracked {self.n_imgs} frames")
-                
-            except Exception as e:
-                print(f"[ERROR] Mask collection failed: {e}")
-                print("[SAM2] Falling back to optical flow tracking")
-                self.region_groups_tracked = []
-                _fallback_optical_flow_tracking()
-
-        except Exception as e:
-            print(f"[ERROR] SAM2 video predictor failed: {e}")
-            print("[SAM2] Using optical flow tracking as fallback")
-            self.region_groups_tracked = []
-            _fallback_optical_flow_tracking()
-
-        finally:
-            # 清理临时目录
-            if hasattr(self, "_sam2_tmpdir") and self._sam2_tmpdir and os.path.exists(self._sam2_tmpdir):
-                try:
-                    shutil.rmtree(self._sam2_tmpdir)
-                    print(f"[SAM2] Cleaned up temp directory: {self._sam2_tmpdir}")
-                except Exception as e:
-                    print(f"[WARN] Failed to cleanup temp directory: {e}")
-
-        # 兼容旧接口
         self.region_groups = [g.to(self.device) for g in self.region_groups_tracked]
+
 
 def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-3, temporal_smoothing_weight=0, depth_map_save_dir=None):
     params = [p for p in net.parameters() if p.requires_grad]
