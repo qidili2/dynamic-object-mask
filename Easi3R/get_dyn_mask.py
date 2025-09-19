@@ -476,7 +476,7 @@ def main():
         flow_loss_thre=25, use_self_mask=True,
         num_total_iter=0, empty_cache=False,
         batchify=True, use_atten_mask=True, use_region_pooling = True,
-        sam2_group_output_dir = "/mnt/data0/andy/Easi3R/sam1_regions/mallard-water",
+        sam2_group_output_dir = "/mnt/data0/andy/Easi3R/sam2_region_track/mallard-water",
         sam2_mask_refine=False
     )
 
