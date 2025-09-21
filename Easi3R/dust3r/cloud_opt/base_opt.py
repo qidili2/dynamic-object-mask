@@ -10,7 +10,7 @@ import torch.nn as nn
 import roma
 from copy import deepcopy
 import tqdm
-
+import uuid
 from dust3r.utils.geometry import inv, geotrf
 from dust3r.utils.device import to_numpy
 from dust3r.utils.image import rgb
@@ -186,9 +186,9 @@ class BasePCOptimizer (nn.Module):
                     # 你也可以把 vis_dir=None；保留的话会存每帧的 group 可视化和 .npy
                     self.generate_region_groups_with_tracking(
                         proposal_backend="sam1",  
-                        reinit_every=10,         
+                        # reinit_every=10,         
                         min_size=100,             
-                        iou_new_thr=0.20,         
+                        # iou_new_thr=0.20,         
                         vis_dir=sam2_group_output_dir            
                     )
 
@@ -1097,108 +1097,33 @@ class BasePCOptimizer (nn.Module):
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{video_mask_path}"')
-            
+ 
     @torch.no_grad()
     def generate_region_groups_with_tracking(
         self,
         proposal_backend="sam1",  
-        reinit_every=10,          
         min_size=100,             
-        iou_new_thr=0.20,         
+        max_objects=15,           # 限制最大对象数量
         vis_dir=None              
     ):
         """
-        修复版本：确保对象ID在整个视频中保持一致
+        直接使用SAM生成的masks作为SAM2的初始regions进行追踪
         
-        关键改进：
-        1. 使用全局ID映射表维护对象一致性
-        2. 重置时通过IoU匹配重新关联对象
-        3. 统一的颜色调色板确保同一对象同一颜色
+        策略：
+        1. 在第0帧用SAM生成高质量的segmentation masks
+        2. 将这些masks直接作为SAM2的初始regions
+        3. 使用SAM2进行整个视频的追踪
+        4. 避免点击转换，保持原始mask的完整性
         """
         import numpy as np
         import torch
         import cv2
         import os
         from time import perf_counter as _now
-        import csv
-        from collections import defaultdict
         import shutil
+        original_cwd = os.getcwd()
+        print(f"[DEBUG] Original CWD: {original_cwd}")
         
-        def compute_iou(mask1, mask2):
-            """计算两个mask的IoU"""
-            intersection = np.logical_and(mask1, mask2).sum()
-            union = np.logical_or(mask1, mask2).sum()
-            return intersection / (union + 1e-8)
-
-        def create_consistent_color_palette():
-            """创建一致的颜色调色板"""
-            # 使用固定的颜色序列，确保同一ID总是同一颜色
-            colors = [
-                [0, 0, 0],        # 0: 背景 - 黑色
-                [31, 119, 180],   # 1: 蓝色
-                [255, 127, 14],   # 2: 橙色  
-                [44, 160, 44],    # 3: 绿色
-                [214, 39, 40],    # 4: 红色
-                [148, 103, 189],  # 5: 紫色
-                [140, 86, 75],    # 6: 棕色
-                [227, 119, 194],  # 7: 粉色
-                [127, 127, 127],  # 8: 灰色
-                [188, 189, 34],   # 9: 黄绿色
-                [23, 190, 207],   # 10: 青色
-                [174, 199, 232],  # 11: 浅蓝色
-                [255, 187, 120],  # 12: 浅橙色
-                [152, 223, 138],  # 13: 浅绿色
-                [255, 152, 150],  # 14: 浅红色
-                [197, 176, 213],  # 15: 浅紫色
-                [196, 156, 148],  # 16: 浅棕色
-                [247, 182, 210],  # 17: 浅粉色
-                [199, 199, 199],  # 18: 浅灰色
-                [219, 219, 141],  # 19: 浅黄色
-                [158, 218, 229],  # 20: 浅青色
-            ]
-            return np.array(colors, dtype=np.uint8)
-
-        def colorize_groups_consistent(group_ids: np.ndarray, color_palette: np.ndarray) -> np.ndarray:
-            """使用一致的颜色调色板着色"""
-            assert group_ids.ndim == 2
-            H, W = group_ids.shape
-            colored = np.zeros((H, W, 3), dtype=np.uint8)
-            ids = group_ids.astype(np.int64)
-            uniq = np.unique(ids)
-            
-            for g in uniq:
-                if g == 0:
-                    colored[ids == 0] = color_palette[0]  # 背景
-                else:
-                    # 使用模运算确保颜色循环，但同一ID总是同一颜色
-                    color_idx = (g % (len(color_palette) - 1)) + 1
-                    colored[ids == g] = color_palette[color_idx]
-            return colored
-
-        def match_objects_by_iou(prev_masks, curr_masks, iou_threshold=0.3):
-            """通过IoU匹配前后两帧的对象"""
-            matching = {}  # curr_id -> prev_id
-            used_prev_ids = set()
-            
-            # 计算所有可能的IoU匹配
-            iou_matrix = {}
-            for curr_id, curr_mask in curr_masks.items():
-                for prev_id, prev_mask in prev_masks.items():
-                    if prev_id not in used_prev_ids:
-                        iou = compute_iou(curr_mask, prev_mask)
-                        if iou > iou_threshold:
-                            iou_matrix[(curr_id, prev_id)] = iou
-            
-            # 贪心匹配：按IoU从大到小
-            sorted_matches = sorted(iou_matrix.items(), key=lambda x: x[1], reverse=True)
-            
-            for (curr_id, prev_id), iou in sorted_matches:
-                if curr_id not in matching and prev_id not in used_prev_ids:
-                    matching[curr_id] = prev_id
-                    used_prev_ids.add(prev_id)
-            
-            return matching
-
         def convert_to_float32_comprehensive(model):
             """彻底转换所有参数和缓冲区为float32"""
             def _convert_module(module):
@@ -1236,26 +1161,67 @@ class BasePCOptimizer (nn.Module):
                         elif isinstance(item, dict):
                             _convert_inference_state_dtype(item)
 
-        def create_fresh_sam2_predictor(device):
-            """创建一个新的SAM2 predictor实例"""
-            with torch.cuda.amp.autocast(enabled=False):
-                torch.backends.cuda.matmul.allow_tf32 = False
-                torch.backends.cudnn.allow_tf32 = False
+        def create_consistent_color_palette():
+            """创建一致的颜色调色板"""
+            colors = [
+                [0, 0, 0],        # 0: 背景 - 黑色
+                [31, 119, 180],   # 1: 蓝色
+                [255, 127, 14],   # 2: 橙色  
+                [44, 160, 44],    # 3: 绿色
+                [214, 39, 40],    # 4: 红色
+                [148, 103, 189],  # 5: 紫色
+                [140, 86, 75],    # 6: 棕色
+                [227, 119, 194],  # 7: 粉色
+                [127, 127, 127],  # 8: 灰色
+                [188, 189, 34],   # 9: 黄绿色
+                [23, 190, 207],   # 10: 青色
+                [174, 199, 232],  # 11: 浅蓝色
+                [255, 187, 120],  # 12: 浅橙色
+                [152, 223, 138],  # 13: 浅绿色
+                [255, 152, 150],  # 14: 浅红色
+                [197, 176, 213],  # 15: 浅紫色
+                [196, 156, 148],  # 16: 浅棕色
+                [247, 182, 210],  # 17: 浅粉色
+                [199, 199, 199],  # 18: 浅灰色
+                [219, 219, 141],  # 19: 浅黄色
+                [158, 218, 229],  # 20: 浅青色
+            ]
+            return np.array(colors, dtype=np.uint8)
+
+        def colorize_groups_consistent(group_ids: np.ndarray, color_palette: np.ndarray) -> np.ndarray:
+            """使用一致的颜色调色板着色"""
+            assert group_ids.ndim == 2
+            H, W = group_ids.shape
+            colored = np.zeros((H, W, 3), dtype=np.uint8)
+            ids = group_ids.astype(np.int64)
+            uniq = np.unique(ids)
+            
+            for g in uniq:
+                if g == 0:
+                    colored[ids == 0] = color_palette[0]  # 背景
+                else:
+                    color_idx = (g % (len(color_palette) - 1)) + 1
+                    colored[ids == g] = color_palette[color_idx]
+            return colored
+
+        def mask_to_points_and_box(mask):
+            """从mask提取点击点和边界框"""
+            y_coords, x_coords = np.where(mask)
+            if len(x_coords) == 0:
+                return None, None, None
                 
-                from sam2.build_sam import build_sam2_video_predictor
-                predictor = build_sam2_video_predictor(
-                    "configs/sam2.1/sam2.1_hiera_l.yaml",
-                    "third_party/sam2/checkpoints/sam2.1_hiera_large.pt", 
-                    device=device
-                )
-                
-                predictor = convert_to_float32_comprehensive(predictor)
-                predictor.eval()
-                
-                if torch.cuda.is_available() and device.type == 'cuda':
-                    predictor = predictor.to(device)
-                
-                return predictor
+            # 计算边界框
+            x_min, x_max = x_coords.min(), x_coords.max()
+            y_min, y_max = y_coords.min(), y_coords.max()
+            box = np.array([x_min, y_min, x_max, y_max], dtype=np.float32)
+            
+            # 计算质心作为正点击
+            center_x = int(np.mean(x_coords))
+            center_y = int(np.mean(y_coords))
+            points = np.array([[center_x, center_y]], dtype=np.float32)
+            labels = np.array([1], dtype=np.int32)
+            
+            return points, labels, box
 
         # 强制使用CUDA设备，禁用混合精度
         if torch.cuda.is_available():
@@ -1272,7 +1238,7 @@ class BasePCOptimizer (nn.Module):
             model.eval()
             return model
         
-        # 构建SAM用于proposal generation
+        # 构建SAM用于初始mask生成
         USE_SAM = (proposal_backend == "sam1")
         
         if USE_SAM:
@@ -1290,38 +1256,48 @@ class BasePCOptimizer (nn.Module):
             from sam2.build_sam import build_sam2
             from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
             with torch.cuda.amp.autocast(enabled=False):
-                sam2 = build_sam2(
+                sam2_amg = build_sam2(
                     "configs/sam2.1/sam2.1_hiera_l.yaml", 
                     "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
                     device=device
                 )
-                sam2 = convert_to_float32_comprehensive(sam2)
-                sam2 = _force_to_cuda(sam2, name="SAM2")
+                sam2_amg = convert_to_float32_comprehensive(sam2_amg)
+                sam2_amg = _force_to_cuda(sam2_amg, name="SAM2_AMG")
                 amg = SAM2AutomaticMaskGenerator(
-                    sam2,
+                    sam2_amg,
                     crop_n_layers=0,
                     pred_iou_thresh=0.75,
                     output_mode="binary_mask",
                 )
         
+        # 构建SAM2 video predictor用于追踪
+        print(f"[SAM→SAM2] Building SAM2 video predictor...")
+        with torch.cuda.amp.autocast(enabled=False):
+            from sam2.build_sam import build_sam2_video_predictor
+            sam2_predictor = build_sam2_video_predictor(
+                "configs/sam2.1/sam2.1_hiera_l.yaml",
+                "third_party/sam2/checkpoints/sam2.1_hiera_large.pt", 
+                device=device
+            )
+            sam2_predictor = convert_to_float32_comprehensive(sam2_predictor)
+            sam2_predictor = _force_to_cuda(sam2_predictor, name="SAM2_VideoPredictor")
+        
         # 准备视频路径
-        temp_video_dir = "/tmp/temp_frames_consistent"
+        unique_id = str(uuid.uuid4())[:8]
+        temp_video_dir = f"/tmp/temp_frames_sam2sam2_{unique_id}"
         if os.path.exists("/dev/shm"):
-            temp_video_dir = "/dev/shm/temp_frames_consistent"
+            temp_video_dir = f"/dev/shm/temp_frames_sam2sam2_{unique_id}"
         os.makedirs(temp_video_dir, exist_ok=True)
         
         # 保存所有帧到临时目录
-        print(f"[TRACKING] Saving {self.n_imgs} frames for consistent tracking...")
+        print(f"[SAM→SAM2] Saving {self.n_imgs} frames...")
         for i in range(self.n_imgs):
             img_rgb = (self.imgs[i] * 255).astype(np.uint8)
             img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
             cv2.imwrite(os.path.join(temp_video_dir, f"{i:06d}.jpg"), img_bgr)
         
-        # 核心数据结构
+        # 存储结果
         region_groups = []
-        global_object_registry = {}  # global_obj_id -> latest_mask
-        next_global_obj_id = 1
-        prev_frame_masks = {}  # 上一帧的masks，用于IoU匹配
         color_palette = create_consistent_color_palette()
         
         # 可视化相关
@@ -1329,222 +1305,158 @@ class BasePCOptimizer (nn.Module):
             os.makedirs(os.path.join(vis_dir, "groups"), exist_ok=True)
             os.makedirs(os.path.join(vis_dir, "overlays"), exist_ok=True)
             os.makedirs(os.path.join(vis_dir, "groups_npy"), exist_ok=True)
+            
+            # 保存初始SAM结果
+            os.makedirs(os.path.join(vis_dir, "sam_initial"), exist_ok=True)
 
         try:
-            # 初始化SAM2 predictor
-            sam2_predictor = create_fresh_sam2_predictor(device)
+            # 步骤1: 在第0帧用SAM生成高质量masks
+            print(f"[SAM→SAM2] Generating initial SAM masks on frame 0...")
+            img_rgb = (self.imgs[0] * 255).astype(np.uint8)
             
-            # 初始化inference state
-            print(f"[TRACKING] Initializing consistent tracking...")
+            with torch.cuda.amp.autocast(enabled=False):
+                sam_results = amg.generate(img_rgb)
+            
+            # 筛选和排序SAM结果
+            sam_results = sorted(sam_results, key=lambda x: x['area'], reverse=True)
+            sam_results = [r for r in sam_results if r['area'] >= min_size][:max_objects]
+            
+            print(f"[SAM→SAM2] Selected {len(sam_results)} high-quality masks from SAM")
+            
+            # 可视化初始SAM结果
+            if vis_dir:
+                H, W = self.imshapes[0]
+                sam_group_ids = np.zeros((H, W), dtype=np.int32)
+                for i, result in enumerate(sam_results):
+                    mask = result['segmentation'].astype(bool)
+                    sam_group_ids[mask] = i + 1
+                
+                sam_colored = colorize_groups_consistent(sam_group_ids, color_palette)
+                sam_bgr = cv2.cvtColor(sam_colored, cv2.COLOR_RGB2BGR)
+                cv2.putText(sam_bgr, f"SAM Initial Masks: {len(sam_results)} objects", 
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
+                cv2.imwrite(os.path.join(vis_dir, "sam_initial", "sam_masks_frame_0.png"), sam_bgr)
+                
+                # 保存overlay
+                sam_overlay = cv2.addWeighted(
+                    cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR), 0.6,
+                    sam_colored, 0.4, 0
+                )
+                cv2.putText(sam_overlay, f"SAM Initial Masks: {len(sam_results)} objects", 
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
+                cv2.imwrite(os.path.join(vis_dir, "sam_initial", "sam_overlay_frame_0.png"), sam_overlay)
+            
+            # 步骤2: 初始化SAM2 video predictor
+            print(f"[SAM→SAM2] Initializing SAM2 video tracking...")
             with torch.cuda.amp.autocast(enabled=False):
                 inference_state = sam2_predictor.init_state(video_path=temp_video_dir)
                 sam2_predictor.reset_state(inference_state)
                 _convert_inference_state_dtype(inference_state)
             
-            # 第0帧：生成初始proposals
-            print(f"[TRACKING] Generating initial proposals...")
-            img_rgb = (self.imgs[0] * 255).astype(np.uint8)
+            # 步骤3: 将SAM masks添加到SAM2追踪器
+            print(f"[SAM→SAM2] Adding {len(sam_results)} SAM masks to SAM2 tracker...")
+            added_objects = []
             
-            with torch.cuda.amp.autocast(enabled=False):
-                props = amg.generate(img_rgb)
-            
-            props = sorted(props, key=lambda p: p['area'], reverse=True)
-            props = [p for p in props if p['area'] >= min_size][:12]
-            
-            # 添加初始对象到SAM2，建立全局ID映射
-            sam2_to_global_mapping = {}  # SAM2内部ID -> 全局ID
-            
-            for prop in props:
-                mask = prop['segmentation'].astype(bool)
-                y_coords, x_coords = np.where(mask)
-                if len(x_coords) > 0:
-                    center_x = int(np.mean(x_coords))
-                    center_y = int(np.mean(y_coords))
-                    
-                    points = np.array([[center_x, center_y]], dtype=np.float32)
-                    labels = np.array([1], dtype=np.int32)
-                    
+            for obj_id, sam_result in enumerate(sam_results, start=1):
+                mask = sam_result['segmentation'].astype(bool)
+                
+                # 从SAM mask提取prompt信息
+                points, labels, box = mask_to_points_and_box(mask)
+                
+                if points is not None:
                     try:
                         with torch.cuda.amp.autocast(enabled=False):
+                            # 使用box + points的组合prompt，更稳定
                             _, out_obj_ids, out_mask_logits = sam2_predictor.add_new_points_or_box(
                                 inference_state=inference_state,
                                 frame_idx=0,
-                                obj_id=next_global_obj_id,  # 使用全局ID作为SAM2的ID
+                                obj_id=obj_id,
                                 points=points,
                                 labels=labels,
+                                box=box,  # 同时提供box和points
                             )
                         
-                        sam2_to_global_mapping[next_global_obj_id] = next_global_obj_id
-                        global_object_registry[next_global_obj_id] = mask
-                        next_global_obj_id += 1
+                        added_objects.append(obj_id)
+                        print(f"[SAM→SAM2] Added object {obj_id} (area: {sam_result['area']})")
                         
                     except Exception as e:
-                        print(f"[TRACKING] Failed to add initial object: {e}")
+                        print(f"[SAM→SAM2] Failed to add object {obj_id}: {e}")
                         if "BFloat16" in str(e) or "Float" in str(e):
+                            print(f"[SAM→SAM2] Data type error, stopping object addition")
                             break
             
-            print(f"[TRACKING] Added {len(sam2_to_global_mapping)} initial objects")
+            print(f"[SAM→SAM2] Successfully added {len(added_objects)} objects to SAM2 tracker")
             
-            # 连续追踪所有帧
-            frames_since_reset = 0
+            # 步骤4: 运行SAM2追踪整个视频
+            print(f"[SAM→SAM2] Running SAM2 tracking for all {self.n_imgs} frames...")
+            
+            # 一次性获取所有帧的追踪结果
+            video_segments = {}
+            
+            try:
+                with torch.cuda.amp.autocast(enabled=False):
+                    for out_frame_idx, out_obj_ids, out_mask_logits in sam2_predictor.propagate_in_video(inference_state):
+                        if out_frame_idx < self.n_imgs:
+                            frame_masks = {}
+                            
+                            for i, obj_id in enumerate(out_obj_ids):
+                                if obj_id in added_objects:
+                                    mask_logits = out_mask_logits[i]
+                                    
+                                    # 数据类型处理
+                                    if mask_logits.dtype in [torch.bfloat16, torch.float16]:
+                                        mask_logits = mask_logits.float()
+                                    
+                                    while mask_logits.dim() > 2:
+                                        mask_logits = mask_logits.squeeze(0)
+                                    
+                                    mask = (mask_logits > 0.0).cpu().numpy()
+                                    H, W = self.imshapes[out_frame_idx]
+                                    
+                                    if mask.ndim == 2 and mask.shape == (H, W):
+                                        frame_masks[obj_id] = mask
+                            
+                            video_segments[out_frame_idx] = frame_masks
+                            
+                            if out_frame_idx % 10 == 0:
+                                print(f"[SAM→SAM2] Processed frame {out_frame_idx}, {len(frame_masks)} objects")
+                        
+                        if out_frame_idx >= self.n_imgs - 1:
+                            break
+                            
+            except Exception as e:
+                print(f"[SAM→SAM2] Tracking failed: {e}")
+                # 创建空结果
+                for frame_idx in range(self.n_imgs):
+                    video_segments[frame_idx] = {}
+            
+            # 步骤5: 转换结果为region_groups
+            print(f"[SAM→SAM2] Converting tracking results to region groups...")
             
             for frame_idx in range(self.n_imgs):
-                frame_start = _now()
-                
-                # 检查是否需要重置inference state
-                if frames_since_reset >= reinit_every and frame_idx > 0:
-                    print(f"[TRACKING] Resetting inference state at frame {frame_idx} for stability...")
-                    
-                    try:
-                        # 保存当前帧的对象状态（重置前获取）
-                        current_objects_backup = global_object_registry.copy()
-                        
-                        # 重置inference state
-                        with torch.cuda.amp.autocast(enabled=False):
-                            sam2_predictor.reset_state(inference_state)
-                            _convert_inference_state_dtype(inference_state)
-                        
-                        # 清空映射，准备重新建立
-                        sam2_to_global_mapping.clear()
-                        
-                        # 重新添加所有现有对象到当前帧
-                        for global_id, last_mask in current_objects_backup.items():
-                            y_coords, x_coords = np.where(last_mask)
-                            if len(x_coords) > 0:
-                                center_x = int(np.mean(x_coords))
-                                center_y = int(np.mean(y_coords))
-                                
-                                points = np.array([[center_x, center_y]], dtype=np.float32)
-                                labels = np.array([1], dtype=np.int32)
-                                
-                                try:
-                                    with torch.cuda.amp.autocast(enabled=False):
-                                        _, _, _ = sam2_predictor.add_new_points_or_box(
-                                            inference_state=inference_state,
-                                            frame_idx=frame_idx,
-                                            obj_id=global_id,  # 使用原来的全局ID
-                                            points=points,
-                                            labels=labels,
-                                        )
-                                    sam2_to_global_mapping[global_id] = global_id
-                                except Exception as e:
-                                    print(f"[TRACKING] Failed to re-add object {global_id}: {e}")
-                        
-                        frames_since_reset = 0
-                        print(f"[TRACKING] Successfully reset with {len(sam2_to_global_mapping)} objects")
-                        
-                    except Exception as e:
-                        print(f"[TRACKING] Reset failed: {e}")
-                
-                # 获取当前帧的追踪结果
-                frame_masks = {}
                 H, W = self.imshapes[frame_idx]
-                
-                try:
-                    # 运行propagation到当前帧
-                    with torch.cuda.amp.autocast(enabled=False):
-                        for out_frame_idx, out_obj_ids, out_mask_logits in sam2_predictor.propagate_in_video(inference_state):
-                            if out_frame_idx == frame_idx:
-                                for i, sam2_obj_id in enumerate(out_obj_ids):
-                                    if sam2_obj_id in sam2_to_global_mapping:
-                                        global_id = sam2_to_global_mapping[sam2_obj_id]
-                                        
-                                        mask_logits = out_mask_logits[i]
-                                        if mask_logits.dtype in [torch.bfloat16, torch.float16]:
-                                            mask_logits = mask_logits.float()
-                                        
-                                        while mask_logits.dim() > 2:
-                                            mask_logits = mask_logits.squeeze(0)
-                                        
-                                        mask = (mask_logits > 0.0).cpu().numpy()
-                                        if mask.ndim == 2 and mask.shape == (H, W):
-                                            frame_masks[global_id] = mask
-                                            global_object_registry[global_id] = mask
-                                break
-                            elif out_frame_idx > frame_idx:
-                                break
-                                
-                except Exception as e:
-                    print(f"[TRACKING] Propagation failed for frame {frame_idx}: {e}")
-                    if "BFloat16" in str(e) or "Float" in str(e):
-                        print(f"[TRACKING] Data type error, using previous frame masks")
-                        # 如果有前一帧的masks，用IoU匹配来估计当前帧
-                        if prev_frame_masks:
-                            frame_masks = prev_frame_masks.copy()
-                
-                # 可选：检测新对象（较少频率）
-                if frame_idx % (reinit_every * 3) == 0 and frame_idx > 0:
-                    print(f"[TRACKING] Checking for new objects at frame {frame_idx}")
-                    try:
-                        img_rgb = (self.imgs[frame_idx] * 255).astype(np.uint8)
-                        with torch.cuda.amp.autocast(enabled=False):
-                            new_props = amg.generate(img_rgb)
-                        
-                        new_props = sorted(new_props, key=lambda p: p['area'], reverse=True)
-                        new_props = [p for p in new_props if p['area'] >= min_size]
-                        
-                        # 检查真正新的proposals
-                        for prop in new_props[:3]:  # 限制新对象数量
-                            prop_mask = prop['segmentation'].astype(bool)
-                            is_new = True
-                            
-                            for existing_mask in frame_masks.values():
-                                if compute_iou(prop_mask, existing_mask) > iou_new_thr:
-                                    is_new = False
-                                    break
-                            
-                            if is_new:
-                                y_coords, x_coords = np.where(prop_mask)
-                                if len(x_coords) > 0:
-                                    center_x = int(np.mean(x_coords))
-                                    center_y = int(np.mean(y_coords))
-                                    
-                                    points = np.array([[center_x, center_y]], dtype=np.float32)
-                                    labels = np.array([1], dtype=np.int32)
-                                    
-                                    try:
-                                        with torch.cuda.amp.autocast(enabled=False):
-                                            _, _, _ = sam2_predictor.add_new_points_or_box(
-                                                inference_state=inference_state,
-                                                frame_idx=frame_idx,
-                                                obj_id=next_global_obj_id,
-                                                points=points,
-                                                labels=labels,
-                                            )
-                                        
-                                        sam2_to_global_mapping[next_global_obj_id] = next_global_obj_id
-                                        global_object_registry[next_global_obj_id] = prop_mask
-                                        frame_masks[next_global_obj_id] = prop_mask
-                                        next_global_obj_id += 1
-                                        print(f"[TRACKING] Added new object {next_global_obj_id-1}")
-                                        
-                                    except Exception as e:
-                                        print(f"[TRACKING] Failed to add new object: {e}")
-                                        break
-                                        
-                    except Exception as e:
-                        print(f"[TRACKING] New object detection failed: {e}")
-                
-                # 生成group_ids（使用一致的全局ID）
                 group_ids = np.zeros((H, W), dtype=np.int32)
-                for global_id, mask in frame_masks.items():
-                    if mask.shape == (H, W):
-                        group_ids[mask] = global_id
                 
-                # 保存结果
+                if frame_idx in video_segments:
+                    for obj_id, mask in video_segments[frame_idx].items():
+                        if mask.shape == (H, W):
+                            group_ids[mask] = obj_id
+                
+                # 保存tensor结果
                 g_tensor = torch.from_numpy(group_ids.astype(np.int64))
                 if str(device).startswith("cuda"):
                     g_tensor = g_tensor.to(device, non_blocking=True)
                 region_groups.append(g_tensor)
                 
-                # 可视化保存（使用一致的颜色）
+                # 可视化保存
                 if vis_dir:
-                    # 保存group可视化（使用一致的颜色调色板）
+                    # 保存group可视化
                     color_rgb = colorize_groups_consistent(group_ids, color_palette)
-                    groups_bgr = cv2.cvtColor(color_rgb, cv2.COLOR_RGB2BGR) 
+                    groups_bgr = cv2.cvtColor(color_rgb, cv2.COLOR_RGB2BGR)
                     
-                    # 添加帧信息
-                    txt = f"Frame {frame_idx+1}/{self.n_imgs} | Objects: {len(frame_masks)}"
+                    # 添加信息文字
+                    n_objects = len(video_segments.get(frame_idx, {}))
+                    txt = f"Frame {frame_idx+1}/{self.n_imgs} | Objects: {n_objects}"
                     cv2.putText(groups_bgr, txt, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,0,0), 4, cv2.LINE_AA)
                     cv2.putText(groups_bgr, txt, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2, cv2.LINE_AA)
                     
@@ -1563,53 +1475,49 @@ class BasePCOptimizer (nn.Module):
                     # 保存numpy数组
                     np.save(os.path.join(vis_dir, "groups_npy", f"group_{frame_idx:04d}.npy"), 
                         group_ids.astype(np.int32))
-                
-                # 更新前一帧masks
-                prev_frame_masks = frame_masks.copy()
-                frames_since_reset += 1
-                
-                frame_end = _now()
-                if frame_idx % 10 == 0:
-                    print(f"[TRACKING] Frame {frame_idx}: {len(frame_masks)} objects, time: {frame_end - frame_start:.3f}s")
         
         finally:
-            # 清理
-            try:
-                shutil.rmtree(temp_video_dir, ignore_errors=True)
-            except:
-                pass
-            
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # 清理所有可能的状态污染
+            if hasattr(self, '_temp_video_path'):
+                delattr(self, '_temp_video_path')
+            current_cwd = os.getcwd()
+            print(f"[DEBUG] CWD after tracking: {current_cwd}")
+            if current_cwd != original_cwd:
+                print(f"[WARNING] Working directory changed!")
+                os.chdir(original_cwd)
+            # 重置工作目录
+            import os
+            original_cwd = getattr(self, '_original_cwd', None)
+            if original_cwd and os.path.exists(original_cwd):
+                os.chdir(original_cwd)
 
-        # 生成可视化视频（使用ffmpeg）
+        # 生成可视化视频
         if vis_dir and len(region_groups) > 0:
-            print(f"[TRACKING] Generating visualization videos...")
+            print(f"[SAM→SAM2] Generating visualization videos...")
             
             # 生成groups视频
-            groups_video_path = os.path.join(vis_dir, "0_groups_consistent.mp4")
+            groups_video_path = os.path.join(vis_dir, "0_sam_to_sam2_groups.mp4")
             os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{os.path.join(vis_dir, "groups")}/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{groups_video_path}"')
             
             # 生成overlay视频  
-            overlay_video_path = os.path.join(vis_dir, "0_overlays_consistent.mp4")
+            overlay_video_path = os.path.join(vis_dir, "0_sam_to_sam2_overlays.mp4")
             os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{os.path.join(vis_dir, "overlays")}/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{overlay_video_path}"')
             
-            print(f"[TRACKING] Videos saved: {groups_video_path}, {overlay_video_path}")
+            print(f"[SAM→SAM2] Videos saved: {groups_video_path}, {overlay_video_path}")
 
         self.region_groups = region_groups
-        print(f"[TRACKING] Completed consistent SAM2 tracking for {len(region_groups)} frames")
-        print(f"[TRACKING] Final global object count: {next_global_obj_id - 1}")
-        print(f"[TRACKING] Color consistency: Each object ID will have the same color throughout the video")
+        print(f"[SAM→SAM2] Completed SAM→SAM2 tracking for {len(region_groups)} frames")
+        print(f"[SAM→SAM2] Total objects tracked: {len(added_objects)}")
+        print(f"[SAM→SAM2] Using direct SAM masks as initial regions (no point conversion)")
         
         return region_groups
-
-
+ 
 def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-3, temporal_smoothing_weight=0, depth_map_save_dir=None):
     params = [p for p in net.parameters() if p.requires_grad]
     if not params:

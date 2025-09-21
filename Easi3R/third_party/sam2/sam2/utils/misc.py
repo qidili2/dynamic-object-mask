@@ -204,6 +204,32 @@ def load_video_frames(
             async_loading_frames=async_loading_frames,
             compute_device=compute_device,
         )
+    # elif is a list
+    elif isinstance(video_path, list):
+        return load_video_frames_from_jpg_images(
+            video_path=video_path,
+            image_size=image_size,
+            offload_video_to_cpu=offload_video_to_cpu,
+            img_mean=img_mean,
+            img_std=img_std,
+            async_loading_frames=async_loading_frames,
+            compute_device=compute_device,
+            list_input=True,
+        )
+    elif isinstance(video_path, torch.Tensor):
+        N, D, H, W = video_path.shape
+        # use bicubic interpolation to resize the video frames
+        video_frames = torch.nn.functional.interpolate(
+            video_path, size=(image_size, image_size), mode="bicubic", align_corners=False
+        )
+        # normalize by mean and std
+        if not offload_video_to_cpu:
+            video_frames = video_frames.to(compute_device)
+            img_mean = torch.tensor(img_mean, dtype=torch.float32).to(compute_device)[:, None, None]
+            img_std = torch.tensor(img_std, dtype=torch.float32).to(compute_device)[:, None, None]
+        video_frames -= img_mean
+        video_frames /= img_std
+        return video_frames, H, W
     else:
         raise NotImplementedError(
             "Only MP4 video and JPEG folder are supported at this moment"
@@ -218,6 +244,7 @@ def load_video_frames_from_jpg_images(
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
+    list_input=False,
 ):
     """
     Load the video frames from a directory of JPEG files ("<frame_index>.jpg" format).
@@ -227,29 +254,33 @@ def load_video_frames_from_jpg_images(
 
     You can load a frame asynchronously by setting `async_loading_frames` to `True`.
     """
-    if isinstance(video_path, str) and os.path.isdir(video_path):
-        jpg_folder = video_path
+    if list_input:
+        img_paths = video_path
+        num_frames = len(img_paths)
     else:
-        raise NotImplementedError(
-            "Only JPEG frames are supported at this moment. For video files, you may use "
-            "ffmpeg (https://ffmpeg.org/) to extract frames into a folder of JPEG files, such as \n"
-            "```\n"
-            "ffmpeg -i <your_video>.mp4 -q:v 2 -start_number 0 <output_dir>/'%05d.jpg'\n"
-            "```\n"
-            "where `-q:v` generates high-quality JPEG frames and `-start_number 0` asks "
-            "ffmpeg to start the JPEG file from 00000.jpg."
-        )
+        if isinstance(video_path, str) and os.path.isdir(video_path):
+            jpg_folder = video_path
+        else:
+            raise NotImplementedError(
+                "Only JPEG frames are supported at this moment. For video files, you may use "
+                "ffmpeg (https://ffmpeg.org/) to extract frames into a folder of JPEG files, such as \n"
+                "```\n"
+                "ffmpeg -i <your_video>.mp4 -q:v 2 -start_number 0 <output_dir>/'%05d.jpg'\n"
+                "```\n"
+                "where `-q:v` generates high-quality JPEG frames and `-start_number 0` asks "
+                "ffmpeg to start the JPEG file from 00000.jpg."
+            )
 
-    frame_names = [
-        p
-        for p in os.listdir(jpg_folder)
-        if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
-    ]
-    frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-    num_frames = len(frame_names)
-    if num_frames == 0:
-        raise RuntimeError(f"no images found in {jpg_folder}")
-    img_paths = [os.path.join(jpg_folder, frame_name) for frame_name in frame_names]
+        frame_names = [
+            p
+            for p in os.listdir(jpg_folder)
+            if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
+        ]
+        frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+        num_frames = len(frame_names)
+        if num_frames == 0:
+            raise RuntimeError(f"no images found in {jpg_folder}")
+        img_paths = [os.path.join(jpg_folder, frame_name) for frame_name in frame_names]
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
 
