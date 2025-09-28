@@ -103,3 +103,11 @@ sam1_regions/
 *.npy
 # installers
 Miniconda3-*.sh
+
+
+vggt/input_images_*/
+results/
+checkpoints/
+*.npz
+*.glb
+*.mp4 *.avi *.mov
