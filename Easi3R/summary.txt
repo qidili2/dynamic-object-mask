@@ -1,47 +1,47 @@
-[Summary by base sequence] groups: 90, improved: 47, worse: 43, same: 0
+[Summary by base sequence] groups: 90, improved: 49, worse: 41, same: 0
 
 [Top improvements by base]
       base_seq  dJF-Mean  dJ-Mean  dF-Mean
-       walking   36.1165  34.7470  37.4860
-    skate-park   20.1590  17.7480  22.5700
-         koala   14.8360  11.2930  18.3790
-        rallye   11.0715   6.4670  15.6760
-          bear   10.7445   5.6510  15.8380
-  planes-water    8.9150   7.2310  10.5990
-   mbike-trick    6.6955  14.4110  -1.0200
-      cat-girl    6.3355   1.5850  11.0860
-     motorbike    5.0385   3.5610   6.5160
-      car-turn    4.6590   2.5290   6.7890
-      flamingo    4.4325   4.9110   3.9540
-boxing-fisheye    4.3125   3.3570   5.2680
-    drift-turn    4.1550   0.0020   8.3080
-   dog-agility    4.0920   2.6030   5.5810
-     color-run    4.0865   5.8020   2.3710
-   upside-down    3.9875   0.9560   7.0190
-          surf    3.5250   0.0340   7.0160
-   schoolgirls    3.4130   4.2910   2.5350
-   rollerblade    2.6790   2.7390   2.6190
-       soapbox    2.6210   1.9790   3.2630
+   disc-jockey   30.8990  38.5590  23.2390
+     lindy-hop   27.0000  25.9930  28.0070
+    skate-park   19.6095  18.7690  20.4500
+     kite-walk   15.8800  18.6600  13.1000
+         koala   15.2765  12.1850  18.3680
+         drone   11.7035  13.2100  10.1970
+  varanus-cage   11.5915  13.3540   9.8290
+         train    9.5460   8.5350  10.5570
+      car-turn    8.4115   5.3560  11.4670
+    dog-gooses    7.9430   5.9930   9.8930
+drift-straight    7.0685   3.9270  10.2100
+      cat-girl    6.6850   1.6720  11.6980
+        rallye    6.4430   4.7990   8.0870
+       walking    6.0675   3.1120   9.0230
+boxing-fisheye    5.5925   4.6170   6.5680
+    breakdance    5.4780   5.0650   5.8910
+     color-run    4.3680   5.9540   2.7820
+   upside-down    3.9210   1.4740   6.3680
+     blackswan    3.6070   1.0260   6.1880
+          boat    3.3660   9.4180  -2.6860
 
 [Top drops by base]
-          base_seq  dJF-Mean  dJ-Mean  dF-Mean
-              pigs  -27.3650 -43.1190 -11.6110
-         dogs-jump  -26.3040 -21.5110 -31.0970
-            hockey  -19.3760 -20.0670 -18.6850
-      bike-packing  -18.0455 -19.0560 -17.0350
-              boat   -7.9290 -12.8960  -2.9620
-         kite-walk   -7.7125  -0.1430 -15.2820
-            tennis   -7.0280  -4.8700  -9.1860
-               bus   -6.8385  -7.1540  -6.5230
-         bmx-bumps   -6.0345  -4.7620  -7.3070
-         gold-fish   -5.7925  -3.9210  -7.6640
-    drift-straight   -5.3370  -5.3840  -5.2900
-       disc-jockey   -3.9295  -1.7220  -6.1370
-              judo   -3.3875  -1.8240  -4.9510
-        breakdance   -3.0335  -2.7900  -3.2770
-     mallard-water   -2.3395   0.0000  -4.6790
-              goat   -1.8135  -1.7300  -1.8970
-              hike   -1.7670  -0.9630  -2.5710
-           dancing   -1.7505  -0.7690  -2.7320
-paragliding-launch   -1.6445   7.1930 -10.4820
-             drone   -1.6070  -1.1580  -2.0560
+       base_seq  dJF-Mean  dJ-Mean  dF-Mean
+       flamingo  -25.8095 -20.4690 -31.1500
+         hockey  -23.1670 -27.1260 -19.2080
+      bmx-trees  -13.1025 -11.3130 -14.8920
+          rhino  -12.4360  -8.8790 -15.9930
+         tennis  -11.8070  -7.9880 -15.6260
+  mallard-water  -10.6815   0.0000 -21.3630
+   bike-packing  -10.6105 -11.5310  -9.6900
+motocross-bumps   -4.4860  -3.2490  -5.7230
+           judo   -4.2370  -2.3150  -6.1590
+          sheep   -4.1030  -2.5390  -5.6670
+          libby   -4.0810  -3.9440  -4.2180
+            bus   -3.6410  -3.0160  -4.2660
+      gold-fish   -3.3340  -1.9720  -4.6960
+    classic-car   -3.0385  -3.2990  -2.7780
+       crossing   -2.9295  -1.7900  -4.0690
+           goat   -2.6565  -2.8900  -2.4230
+    dance-twirl   -2.6015  -2.9220  -2.2810
+    schoolgirls   -2.2235  -1.4590  -2.9880
+     car-shadow   -1.8400  -2.4990  -1.1810
+   tractor-sand   -1.8175  -2.6230  -1.0120

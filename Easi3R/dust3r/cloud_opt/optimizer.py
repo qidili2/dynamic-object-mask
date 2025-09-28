@@ -181,14 +181,24 @@ class PointCloudOptimizer(BasePCOptimizer):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.dynamic_masks = [[] for _ in range(self.n_imgs)]
         self.init_dynamic_masks = [[] for _ in range(self.n_imgs)]
-        attns = self.get_atts() # [B,H,W]
-        upsampled_attns = torch.nn.functional.interpolate(attns.unsqueeze(-1).permute(0, 3, 1, 2), \
-                                                size=self.imshape, mode='bilinear', align_corners=False).permute(0, 2, 3, 1).squeeze(-1) # align_corners=False
-        upsampled_mask = (upsampled_attns > adaptive_multiotsu_variance(upsampled_attns.cpu().numpy()))
 
-        for i in range(self.n_imgs):
-            self.dynamic_masks[i] = upsampled_mask[i].to(device)
-            self.init_dynamic_masks[i] = self.dynamic_masks[i].detach().clone()
+        attns = self.get_atts()  # [B,Ht,Wt]，来自 refined_dynamic_map【turn8file15†L64-L66】
+        if hasattr(self, "region_groups") and len(self.region_groups) == attns.shape[0]:
+            # region-aware 的高分辨率 mask
+            hr_masks = self.make_hr_masks_from_regions(attns, use_refined=True, include_background=False, patch=16)
+            for i in range(self.n_imgs):
+                self.dynamic_masks[i] = hr_masks[i].to(device)         # 这里就是 H_img×W_img 的高分辨率
+                self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
+        else:
+            # 兼容：维持原来的“插值+阈值”方案（低精度）
+            upsampled_attns = torch.nn.functional.interpolate(
+                attns.unsqueeze(-1).permute(0, 3, 1, 2),
+                size=self.imshape, mode='bilinear', align_corners=False
+            ).permute(0, 2, 3, 1).squeeze(-1)
+            upsampled_mask = (upsampled_attns > adaptive_multiotsu_variance(upsampled_attns.cpu().numpy()))
+            for i in range(self.n_imgs):
+                self.dynamic_masks[i] = upsampled_mask[i].to(device)
+                self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
 
     def get_motion_mask_from_pairs(self, view1, view2, pred1, pred2):
         assert self.is_symmetrized, 'only support symmetric case'

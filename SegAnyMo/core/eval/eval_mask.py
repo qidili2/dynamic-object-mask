@@ -13,6 +13,53 @@ import os
 from scipy.optimize import linear_sum_assignment
 import pandas
 import re
+def read_pred_masks(pred_root, exp_masks=None, pred_subdir=None, pattern='*.png',
+                    resize_to=None, invert=False):
+    """
+    Read predicted masks possibly stored in a subdirectory (e.g., frames_dynamic_masks),
+    binarize them (>0 = FG), optionally invert, and optionally resize to (H, W).
+    Returns uint8 array of shape (T, H, W). If none found, returns zeros_like(exp_masks).
+    """
+    # Decide directory to read from
+    base_dir = pred_root if (pred_subdir is None) else os.path.join(pred_root, pred_subdir)
+    if not os.path.isdir(base_dir):
+        base_dir = pred_root  # fallback to top-level
+
+    # Try the given pattern first
+    pred_paths = sorted(glob(os.path.join(base_dir, pattern)))
+    # Fallback to common extensions if pattern found nothing
+    if len(pred_paths) == 0:
+        pred_paths = (sorted(glob(os.path.join(base_dir, "*.png"))) +
+                      sorted(glob(os.path.join(base_dir, "*.jpg"))) +
+                      sorted(glob(os.path.join(base_dir, "*.jpeg"))) +
+                      sorted(glob(os.path.join(base_dir, "*.bmp"))))
+
+    mask_list = []
+    for path in pred_paths:
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            continue
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Binarize: >0 as FG (to match eval expectation)
+        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY)
+        if invert:
+            img = 255 - img
+        if resize_to is not None:
+            # resize_to should be (H, W) — nearest to preserve mask crispness
+            H, W = resize_to
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_NEAREST)
+        mask = (img > 0).astype(np.uint8)
+        mask_list.append(mask)
+
+    if not mask_list:
+        # Keep previous behavior: if nothing is found, return zeros_like gt (all background)
+        if exp_masks is not None:
+            return np.zeros_like(exp_masks, dtype=np.uint8)
+        return None
+
+    dynamic_mask = np.stack(mask_list, axis=0)  # shape: (T, H, W)
+    return dynamic_mask
 
 def db_eval_iou(annotation, segmentation, void_pixels=None):
     """ Compute region similarity as the Jaccard Index.
@@ -321,9 +368,18 @@ def get_matching_pred_indices(pred_dir, gt_dir):
     return matching_pred_indices
 
 if __name__ == '__main__':
+    
     parser = argparse.ArgumentParser(description='Train trajectory-based motion segmentation network',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--res_dir', type=str,default="current_work_dir/exp_res/sam_res/ablation/no_tracks/initial_preds")
+    parser.add_argument('--pred_subdir', type=str, default=None,
+                        help='Optional subfolder inside each sequence for predicted masks, e.g., "frames_dynamic_masks"')
+    parser.add_argument('--pred_glob', type=str, default='*.png',
+                        help='Glob pattern for predicted masks inside the (sub)dir, e.g., "frame_*.png" or "dynamic_mask_*.png"')
+    parser.add_argument('--resize_to_gt', action='store_true',
+                        help='Resize predicted masks to GT HxW using nearest-neighbor before evaluation')
+    parser.add_argument('--invert_pred', action='store_true',
+                        help='Invert predicted mask polarity if your foreground is 0 and background is >0')
     parser.add_argument('--eval_seq_list', type=str,default="current_work_dir/baseline/DAVIS/ImageSets/2017/moving_val.txt")
     parser.add_argument('--eval_dir', type=str,default="current_work_dir/baseline/DAVIS/Annotations_unsupervised/480p")
     parser.add_argument('--img_dir', type=str,default="current-data-dir/baseline/davis/Testset")
@@ -364,7 +420,15 @@ if __name__ == '__main__':
             pred_masks = read_masks_fbms(res_dir, indices=gt_indices)
         else:
             gt_masks = read_masks(gt_dir)
-            pred_masks = read_masks(res_dir, gt_masks)
+            # If --resize_to_gt, use GT HxW for alignment; otherwise leave None (keep original size)
+            resize_to = (gt_masks.shape[1], gt_masks.shape[2]) if args.resize_to_gt else None
+            pred_masks = read_pred_masks(
+                res_dir, exp_masks=gt_masks,
+                pred_subdir=args.pred_subdir,
+                pattern=args.pred_glob,
+                resize_to=resize_to,
+                invert=args.invert_pred
+            )
 
         # if gt_masks.shape[0] != pred_masks.shape[0]:
         #     gt_masks = gt_masks[:-1]

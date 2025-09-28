@@ -66,7 +66,7 @@ seq_list_2017 = [
     'soapbox'
 ]
 
-seq_list = None # seq_list_2016, seq_list_2017, None for all
+seq_list = seq_list_2016 # seq_list_2016, seq_list_2017, None for all
 
 time_start = time()
 parser = argparse.ArgumentParser()
