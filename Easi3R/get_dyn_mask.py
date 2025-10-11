@@ -223,7 +223,7 @@ from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 # -----------------------------
 # --- Configuration (edit)  ---
 # -----------------------------
-input_path = "/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/motocross-jump"  # video file or a directory of frames
+input_path = "/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dogs-jump"  # video file or a directory of frames
 model_path = "./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 device_str = "cuda"
 image_size = 512        # {224, 512}
@@ -466,7 +466,7 @@ def main():
     else:
         raise RuntimeError(f"Inference returned unexpected type {type(out)}")
 
-    # Align (no optimization, just to get attention & dynamic masks)
+    # Align (no optimization, just to get attention & dynamic masks) （要改）
     scene = global_aligner(
         dust3r_output, device=device,
         mode=GlobalAlignerMode.PointCloudOptimizer,
@@ -476,7 +476,7 @@ def main():
         flow_loss_thre=25, use_self_mask=True,
         num_total_iter=0, empty_cache=False,
         batchify=True, use_atten_mask=True, use_region_pooling = True,
-        sam2_group_output_dir = "/mnt/data0/andy/Easi3R/sam2_region_track/motocross-jump",
+        sam2_group_output_dir = "/mnt/data0/andy/Easi3R/sam2_region_track/dogs-jump",
         sam2_mask_refine=False
     )
 

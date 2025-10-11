@@ -186,11 +186,10 @@ class BasePCOptimizer (nn.Module):
                     # 你也可以把 vis_dir=None；保留的话会存每帧的 group 可视化和 .npy
                     self.generate_region_groups_with_tracking(
                         proposal_backend="sam1",  
-                        # reinit_every=10,         
                         min_size=100,             
-                        # iou_new_thr=0.20,         
                         vis_dir=sam2_group_output_dir            
                     )
+                    print(f"[INIT] Successfully generated {len(self.region_groups)} region groups")
 
 
                 H_img, W_img = self.imshapes[0]
@@ -1151,9 +1150,9 @@ class BasePCOptimizer (nn.Module):
     @torch.no_grad()
     def generate_region_groups_with_tracking(
         self,
-        proposal_backend="sam1",  
-        min_size=200,             
-        max_objects=15,          
+        proposal_backend="sam2",  
+        min_size=500,             
+        max_objects=30,          
         vis_dir=None              
     ):
         """
@@ -1941,20 +1940,41 @@ class BasePCOptimizer (nn.Module):
         
         # 归一化方差到[0,1]范围用于颜色映射 - 最高方差设为1.0
         if object_variances:
-            max_var = max(object_variances.values())
+            # Set alpha parameter (e.g., 0.1 means use 90th percentile as max)
+            alpha = 0.3  # You can adjust this value
+            
+            variances_array = np.array(list(object_variances.values()))
+            
+            # Calculate the (1-alpha) percentile
+            percentile_value = np.percentile(variances_array, (1 - alpha) * 100)
+            
+            # Calculate max_value using the formula: percentile_value * (1-alpha) / alpha
+            if alpha > 0:
+                max_value = percentile_value * (1 - alpha) / alpha
+            else:
+                max_value = variances_array.max()
+            
+            print(f"Variance normalization: alpha = {alpha}")
+            print(f"  {(1-alpha)*100:.0f}th percentile = {percentile_value:.6f}")
+            print(f"  calculated max_value = {max_value:.6f}")
+            print(f"  actual max variance = {variances_array.max():.6f}")
             
             normalized_variances = {}
             for obj_id, var in object_variances.items():
-                if max_var > 1e-8:  # 避免除零
-                    normalized_variances[obj_id] = var / max_var  # 直接除以最大值，确保最高方差为1.0
+                if max_value > 1e-8:  # é¿å…é™¤é›¶
+                    # Normalize using the calculated max_value, clip to [0, 1]
+                    normalized_variances[obj_id] = min(var / max_value, 1.0)
                 else:
                     normalized_variances[obj_id] = 0.0
             
-            print(f"Variance normalization: max_var = {max_var:.6f}")
-            print(f"Objects with highest variance (normalized to 1.0):")
-            # 打印方差最高的几个对象
+            # Print objects with normalized variance >= 1.0 (those above the threshold)
+            high_variance_objs = [obj_id for obj_id, norm_var in normalized_variances.items() if norm_var >= 1.0]
+            print(f"Objects with variance >= max_value (normalized to 1.0): {len(high_variance_objs)}")
+            
+            # Show top variance objects
             sorted_vars = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)
-            for obj_id, var in sorted_vars[:5]:  # 显示前5个
+            print(f"Top objects by variance:")
+            for obj_id, var in sorted_vars[:5]:
                 norm_var = normalized_variances[obj_id]
                 print(f"  Object {obj_id}: variance = {var:.6f} (normalized = {norm_var:.3f})")
         else:
@@ -2121,7 +2141,46 @@ class BasePCOptimizer (nn.Module):
         print(f"Videos: variance heatmap and overlay")
         print(f"Statistics plot: variance_analysis.png")
         print(f"Detailed results: variance_results.txt")
-        
+        object_stats = []
+        for obj_id in sorted(object_attention_values.keys()):
+            attention_values = object_attention_values[obj_id]
+            
+            # Calculate mean and variance of attention
+            mean_attention = np.mean(attention_values)
+            variance_attention = object_variances.get(obj_id, 0.0)
+            
+            # Calculate average pixel area across frames where this object appears
+            pixel_areas = []
+            for frame_idx in range(len(self.region_groups)):
+                group_tensor = self.region_groups[frame_idx]
+                obj_mask = (group_tensor == obj_id)
+                pixel_count = obj_mask.sum().item()
+                if pixel_count > 0:  # Only count frames where object exists
+                    pixel_areas.append(pixel_count)
+            
+            avg_pixel_area = np.mean(pixel_areas) if pixel_areas else 0.0
+            num_frames_present = len(pixel_areas)
+            
+            object_stats.append({
+                'object_id': obj_id,
+                'attention_mean': mean_attention,
+                'attention_variance': variance_attention,
+                'avg_pixel_area': avg_pixel_area,
+                'num_frames_present': num_frames_present,
+                'total_frames': len(self.region_groups)
+            })
+
+        # Save to CSV
+        csv_path = os.path.join(save_folder, 'object_statistics.csv')
+        with open(csv_path, 'w', newline='') as csvfile:
+            fieldnames = ['object_id', 'attention_mean', 'attention_variance', 
+                        'avg_pixel_area', 'num_frames_present', 'total_frames']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            writer.writerows(object_stats)
+
+        print(f"Object statistics saved to: {csv_path}")
         return object_variances, object_attention_values
     
 def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-3, temporal_smoothing_weight=0, depth_map_save_dir=None):

@@ -1,33 +1,43 @@
 Region Attention Variance Analysis
 ==================================================
 
-Total objects tracked: 20
+Total objects tracked: 30
 Total frames: 40
 
 Object Variance Rankings (High to Low):
  1. Object 13: variance = 0.045616
  2. Object 11: variance = 0.038022
- 3. Object  4: variance = 0.034703
- 4. Object 12: variance = 0.032797
- 5. Object 16: variance = 0.032166
- 6. Object  8: variance = 0.030243
- 7. Object 17: variance = 0.029077
- 8. Object 19: variance = 0.028310
- 9. Object  1: variance = 0.027855
-10. Object 18: variance = 0.024851
-11. Object  3: variance = 0.022556
-12. Object  7: variance = 0.021322
-13. Object 20: variance = 0.020889
-14. Object 15: variance = 0.017682
-15. Object  6: variance = 0.016563
-16. Object 14: variance = 0.015538
-17. Object  9: variance = 0.014952
-18. Object 10: variance = 0.004986
-19. Object  2: variance = 0.002991
-20. Object  5: variance = 0.001244
+ 3. Object 23: variance = 0.036333
+ 4. Object  4: variance = 0.034587
+ 5. Object 12: variance = 0.032797
+ 6. Object 16: variance = 0.032166
+ 7. Object 29: variance = 0.031425
+ 8. Object  8: variance = 0.030243
+ 9. Object 17: variance = 0.029077
+10. Object 19: variance = 0.028310
+11. Object  1: variance = 0.027855
+12. Object 18: variance = 0.024851
+13. Object  3: variance = 0.022556
+14. Object 26: variance = 0.021467
+15. Object  7: variance = 0.021322
+16. Object 30: variance = 0.021134
+17. Object 20: variance = 0.020889
+18. Object 25: variance = 0.020012
+19. Object 24: variance = 0.018480
+20. Object 15: variance = 0.017763
+21. Object  6: variance = 0.016572
+22. Object 14: variance = 0.015538
+23. Object 27: variance = 0.013781
+24. Object  9: variance = 0.010679
+25. Object 28: variance = 0.010286
+26. Object 10: variance = 0.004986
+27. Object  2: variance = 0.002991
+28. Object 22: variance = 0.002486
+29. Object  5: variance = 0.001244
+30. Object 21: variance = 0.000017
 
 Variance Statistics:
-Mean variance: 0.023118
-Std variance:  0.011389
-Min variance:  0.001244
+Mean variance: 0.021116
+Std variance:  0.011620
+Min variance:  0.000017
 Max variance:  0.045616

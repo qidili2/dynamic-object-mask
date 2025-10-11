@@ -65,8 +65,67 @@ seq_list_2017 = [
     'shooting',
     'soapbox'
 ]
+seq_list_davis17_fail_case = [
+    'classic-car',
+    'bmx-trees',
+    'dogs-jump',
+    'walking',
+    'india',
+    'varanus-cage',
+    'hockey',
+    'skate-park',
+    'boat',
+    'bmx-bumps',
+    'breakdance',
+    'kite-walk',
+    'upside-down',
+    'longboard',
+    'color-run',
+    'drift-chicane',
+    'dancing',
+    'flamingo',
+    'blackswan',
+    'night-race',
+    'kid-football',
+    'miami-surf',
+    'planes-water',
+    'kite-surf',
+    'surf',
+    'mbike-trick',
+    'scooter-board',
+    'shooting',
+    'motocross-jump',
+    'mallard-water',
+    'drift-turn'
+]
 
-seq_list = seq_list_2016 # seq_list_2016, seq_list_2017, None for all
+
+seq_list_davis17_moving = [
+    'bike-packing',
+    'blackswan',
+    'bmx-trees',
+    'car-shadow',
+    'cows',
+    'dance-twirl',
+    'dog',
+    'dogs-jump',
+    'drift-chicane',
+    'drift-straight',
+    'goat',
+    'horsejump-high',
+    'judo',
+    'kite-surf',
+    'libby',
+    'mbike-trick',
+    'motocross-jump',
+    'paragliding-launch',
+    'parkour',
+    'pigs',
+    'shooting',
+    'soapbox'
+]
+
+seq_list = seq_list_davis17_moving # seq_list_2016, seq_list_2017, None for all
 
 time_start = time()
 parser = argparse.ArgumentParser()

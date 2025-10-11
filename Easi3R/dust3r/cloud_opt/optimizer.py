@@ -177,29 +177,220 @@ class PointCloudOptimizer(BasePCOptimizer):
         return flow_ij, flow_ji, valid_mask_i, valid_mask_j
 
 
-    def get_motion_mask_from_attns(self, ):
+    # def get_motion_mask_from_attns(self, ):
+    #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #     self.dynamic_masks = [[] for _ in range(self.n_imgs)]
+    #     self.init_dynamic_masks = [[] for _ in range(self.n_imgs)]
+
+    #     attns = self.get_atts()  # [B,Ht,Wt]，来自 refined_dynamic_map【turn8file15†L64-L66】
+    #     if hasattr(self, "region_groups") and len(self.region_groups) == attns.shape[0]:
+    #         # region-aware 的高分辨率 mask
+    #         hr_masks = self.make_hr_masks_from_regions(attns, use_refined=True, include_background=False, patch=16)
+    #         for i in range(self.n_imgs):
+    #             self.dynamic_masks[i] = hr_masks[i].to(device)         # 这里就是 H_img×W_img 的高分辨率
+    #             self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
+    #     else:
+    #         # 兼容：维持原来的“插值+阈值”方案（低精度）
+    #         upsampled_attns = torch.nn.functional.interpolate(
+    #             attns.unsqueeze(-1).permute(0, 3, 1, 2),
+    #             size=self.imshape, mode='bilinear', align_corners=False
+    #         ).permute(0, 2, 3, 1).squeeze(-1)
+    #         upsampled_mask = (upsampled_attns > adaptive_multiotsu_variance(upsampled_attns.cpu().numpy()))
+    #         for i in range(self.n_imgs):
+    #             self.dynamic_masks[i] = upsampled_mask[i].to(device)
+    #             self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
+    @torch.no_grad()
+    def get_motion_mask_from_attns(self):
+        """
+        基于region-level的动态判断：
+        1. 计算每个object在所有帧上的mean attention
+        2. 用全局阈值判断object是否dynamic
+        3. 将dynamic objects在各帧的region作为mask
+        """
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.dynamic_masks = [[] for _ in range(self.n_imgs)]
-        self.init_dynamic_masks = [[] for _ in range(self.n_imgs)]
+        
+        # 检查是否有region groups
+        if not hasattr(self, "region_groups") or len(self.region_groups) != self.n_imgs:
+            print("[WARNING] region_groups not available, falling back to pixel-wise method")
+            self._get_motion_mask_pixelwise()
+            return
+        
+        # 获取attention maps - 确保在正确的设备上
+        attns = self.get_atts()  # [B, Ht, Wt]
+        if not isinstance(attns, torch.Tensor):
+            attns = torch.stack(attns)
+        attns = attns.to(device)  # 确保在正确的设备上
+        
+        B, Ht, Wt = attns.shape
+        H_img, W_img = self.imshape
+        
+        print(f"[Region-level Dynamic Detection] Processing {B} frames...")
+        
+        # Step 1: 下采样 region_groups 到 token 级别
+        # 确保所有region_groups都在同一个设备上
+        groups_hr_list = []
+        for rg in self.region_groups:
+            if isinstance(rg, torch.Tensor):
+                groups_hr_list.append(rg.to(device))
+            else:
+                groups_hr_list.append(torch.tensor(rg, device=device))
+        
+        groups_hr = torch.stack(groups_hr_list, dim=0).long()  # [B, H_img, W_img]
+        groups_token = self._downsample_groups_to_tokens(groups_hr, H_img, W_img, patch=16)  # [B, Ht, Wt]
+        
+        # Step 2: 收集所有object在所有帧的attention值
+        # 收集全局所有出现过的object IDs
+        all_object_ids = set()
+        for frame_idx in range(B):
+            unique_ids = torch.unique(groups_token[frame_idx])
+            all_object_ids.update(unique_ids[unique_ids != 0].cpu().tolist())
+        
+        all_object_ids = sorted(list(all_object_ids))
+        print(f"[Region-level Dynamic Detection] Found {len(all_object_ids)} unique objects")
+        
+        # Step 3: 对每个object，计算其在所有帧上的mean attention
+        object_global_attention = {}  # {obj_id: mean_attention_across_all_frames}
+        
+        for obj_id in all_object_ids:
+            attention_values = []
+            
+            for frame_idx in range(B):
+                # 找到该object在当前帧的位置 - 确保设备匹配
+                obj_mask_token = (groups_token[frame_idx] == obj_id)  # [Ht, Wt], 已经在device上
+                
+                if obj_mask_token.sum() > 0:
+                    # 计算该object在当前帧的mean attention
+                    # attns[frame_idx]和obj_mask_token都在同一个device上
+                    mean_att = attns[frame_idx][obj_mask_token].mean().item()
+                    attention_values.append(mean_att)
+            
+            # 计算该object在所有出现帧的平均attention
+            if len(attention_values) > 0:
+                object_global_attention[obj_id] = np.mean(attention_values)
+            else:
+                object_global_attention[obj_id] = 0.0
+        
+        # Step 4: 使用自适应阈值判断哪些objects是dynamic的
+        # 将所有object的global attention收集起来
+        global_att_values = np.array(list(object_global_attention.values()))
+        
+        if len(global_att_values) == 0:
+            print("[WARNING] No objects found, using empty dynamic masks")
+            self.dynamic_masks = [torch.zeros((H_img, W_img), dtype=torch.bool, device=device) 
+                                for _ in range(B)]
+            self.init_dynamic_masks = [m.clone() for m in self.dynamic_masks]
+            return
+        
+        # 使用 adaptive_multiotsu_variance 计算阈值
+        threshold = adaptive_multiotsu_variance(global_att_values)
+        
+        print(f"[Region-level Dynamic Detection] Attention threshold: {threshold:.4f}")
+        
+        # Step 5: 确定哪些objects是dynamic的
+        dynamic_object_ids = set()
+        for obj_id, global_att in object_global_attention.items():
+            if global_att > threshold:
+                dynamic_object_ids.add(obj_id)
+        
+        print(f"[Region-level Dynamic Detection] {len(dynamic_object_ids)}/{len(all_object_ids)} objects marked as dynamic")
+        
+        # 打印一些统计信息
+        if len(object_global_attention) > 0:
+            sorted_objs = sorted(object_global_attention.items(), key=lambda x: x[1], reverse=True)
+            print(f"[Region-level Dynamic Detection] Top 5 most dynamic objects:")
+            for obj_id, att in sorted_objs[:min(5, len(sorted_objs))]:
+                status = "DYNAMIC" if obj_id in dynamic_object_ids else "static"
+                print(f"  Object {obj_id}: attention={att:.4f} [{status}]")
+        
+        # Step 6: 生成每一帧的dynamic mask（基于高分辨率region_groups）
+        self.dynamic_masks = []
+        self.init_dynamic_masks = []
+        
+        for frame_idx in range(B):
+            # 在高分辨率上生成mask
+            group_hr = groups_hr[frame_idx]  # [H_img, W_img], 已经在device上
+            
+            # 初始化mask为False
+            dynamic_mask = torch.zeros_like(group_hr, dtype=torch.bool)  # 自动继承device
+            
+            # 将所有dynamic objects在该帧的区域标记为True
+            for obj_id in dynamic_object_ids:
+                # group_hr和obj_id比较，都在同一个device上
+                obj_mask_hr = (group_hr == obj_id)
+                dynamic_mask |= obj_mask_hr
+            
+            self.dynamic_masks.append(dynamic_mask)
+            self.init_dynamic_masks.append(dynamic_mask.clone())
+        
+        # Step 7: 可视化和统计
+        print(f"[Region-level Dynamic Detection] Dynamic mask statistics:")
+        for frame_idx in range(min(5, B)):  # 只打印前5帧
+            mask_ratio = self.dynamic_masks[frame_idx].float().mean().item()
+            print(f"  Frame {frame_idx}: {mask_ratio*100:.2f}% pixels marked as dynamic")
+        
+        # 保存object-level的判断结果，供后续分析使用
+        self.dynamic_object_ids = dynamic_object_ids
+        self.object_global_attention = object_global_attention
 
-        attns = self.get_atts()  # [B,Ht,Wt]，来自 refined_dynamic_map【turn8file15†L64-L66】
-        if hasattr(self, "region_groups") and len(self.region_groups) == attns.shape[0]:
-            # region-aware 的高分辨率 mask
-            hr_masks = self.make_hr_masks_from_regions(attns, use_refined=True, include_background=False, patch=16)
-            for i in range(self.n_imgs):
-                self.dynamic_masks[i] = hr_masks[i].to(device)         # 这里就是 H_img×W_img 的高分辨率
-                self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
-        else:
-            # 兼容：维持原来的“插值+阈值”方案（低精度）
-            upsampled_attns = torch.nn.functional.interpolate(
-                attns.unsqueeze(-1).permute(0, 3, 1, 2),
-                size=self.imshape, mode='bilinear', align_corners=False
-            ).permute(0, 2, 3, 1).squeeze(-1)
-            upsampled_mask = (upsampled_attns > adaptive_multiotsu_variance(upsampled_attns.cpu().numpy()))
-            for i in range(self.n_imgs):
-                self.dynamic_masks[i] = upsampled_mask[i].to(device)
-                self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
+    def _get_motion_mask_pixelwise(self):
+        """
+        原始的pixel-wise方法（作为fallback）
+        """
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.dynamic_masks = []
+        self.init_dynamic_masks = []
+        
+        attns = self.get_atts()  # [B, Ht, Wt]
+        if not isinstance(attns, torch.Tensor):
+            attns = torch.stack(attns)
+        attns = attns.to(device)
+        
+        # Upsample to image resolution
+        upsampled_attns = torch.nn.functional.interpolate(
+            attns.unsqueeze(1),  # [B, 1, Ht, Wt]
+            size=self.imshape,
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(1)  # [B, H_img, W_img]
+        
+        # Threshold
+        threshold = adaptive_multiotsu_variance(upsampled_attns.cpu().numpy())
+        upsampled_mask = (upsampled_attns > threshold)
+        
+        for i in range(upsampled_mask.shape[0]):
+            self.dynamic_masks.append(upsampled_mask[i].to(device))
+            self.init_dynamic_masks.append(self.dynamic_masks[i].clone())
+        
+        print(f"[Pixel-wise Dynamic Detection] Using fallback pixel-wise method with threshold {threshold:.4f}")
 
+    def _get_motion_mask_pixelwise(self):
+        """
+        原始的pixel-wise方法（作为fallback）
+        """
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.dynamic_masks = []
+        self.init_dynamic_masks = []
+        
+        attns = self.get_atts()  # [B, Ht, Wt]
+        
+        # Upsample to image resolution
+        upsampled_attns = torch.nn.functional.interpolate(
+            attns.unsqueeze(1),  # [B, 1, Ht, Wt]
+            size=self.imshape,
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(1)  # [B, H_img, W_img]
+        
+        # Threshold
+        threshold = adaptive_multiotsu_variance(upsampled_attns.cpu().numpy())
+        upsampled_mask = (upsampled_attns > threshold)
+        
+        for i in range(upsampled_mask.shape[0]):
+            self.dynamic_masks.append(upsampled_mask[i].to(device))
+            self.init_dynamic_masks.append(self.dynamic_masks[i].clone())
+        
+        print(f"[Pixel-wise Dynamic Detection] Using fallback pixel-wise method with threshold {threshold:.4f}")
+        
     def get_motion_mask_from_pairs(self, view1, view2, pred1, pred2):
         assert self.is_symmetrized, 'only support symmetric case'
         symmetry_pairs_idx = [(i, i+len(self.edges)//2) for i in range(len(self.edges)//2)]
