@@ -120,7 +120,7 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
                             flow_loss_start_epoch=args.flow_loss_start_epoch, flow_loss_thre=args.flow_loss_thre, translation_weight=args.translation_weight,
                             sintel_ckpt=args.eval_dataset == 'sintel', use_self_mask=not args.use_gt_mask, sam2_mask_refine=args.sam2_mask_refine,
                             empty_cache=len(imgs) >= 80 and len(pairs) > 600, pxl_thre=args.pxl_thresh, # empty cache to make it run on 48GB GPU
-                            use_atten_mask=True,use_region_pooling=args.use_region_pooling, batchify=False, sam2_group_output_dir=f"{save_dir}/{seq}",
+                            use_atten_mask=True,use_region_pooling=args.use_region_pooling, batchify=False, sam2_group_output_dir=f"{save_dir}/{seq}",textregion_annotations_dir=args.textregion_annotations_dir
                         )
                         atten_masks = scene.dynamic_masks
                         del pairs, output, scene
@@ -149,7 +149,7 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
                         flow_loss_start_epoch=args.flow_loss_start_epoch, flow_loss_thre=args.flow_loss_thre, translation_weight=args.translation_weight,
                         sintel_ckpt=args.eval_dataset == 'sintel', use_self_mask=not args.use_gt_mask, sam2_mask_refine=args.sam2_mask_refine,
                         empty_cache=len(imgs) >= 80 and len(pairs) > 600, pxl_thre=args.pxl_thresh, # empty cache to make it run on 48GB GPU
-                        use_atten_mask=args.use_atten_mask, use_region_pooling=args.use_region_pooling, batchify=not args.not_batchify, #sam2_group_output_dir=f"{save_dir}/{seq}",
+                        use_atten_mask=args.use_atten_mask, use_region_pooling=args.use_region_pooling, batchify=not args.not_batchify,textregion_annotations_dir=args.textregion_annotations_dir, #sam2_group_output_dir=f"{save_dir}/{seq}",
                     )
 
                     os.makedirs(f'{save_dir}/{seq}', exist_ok=True)

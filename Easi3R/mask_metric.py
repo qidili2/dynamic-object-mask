@@ -125,14 +125,14 @@ seq_list_davis17_moving = [
     'soapbox'
 ]
 
-seq_list = seq_list_davis17_moving # seq_list_2016, seq_list_2017, None for all
+# seq_list = seq_list_davis17_moving # seq_list_2016, seq_list_2017, None for all
+seq_list = None
 
 time_start = time()
 parser = argparse.ArgumentParser()
 parser.add_argument('--label_path', type=str, help='Subset to evaluate the results', default='data/davis/DAVIS/Annotations/480p')
 parser.add_argument('--results_path', type=str, help='Subset to evaluate the results', default='all')
 args, _ = parser.parse_known_args()
-
 
 csv_name_global = f'global_results.csv'
 csv_name_per_sequence = f'per-sequence_results.csv'

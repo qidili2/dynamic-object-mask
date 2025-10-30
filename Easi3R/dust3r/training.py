@@ -131,6 +131,13 @@ def get_args_parser():
 
     # output dir
     parser.add_argument('--output_dir', default='./results/tmp', type=str, help="path where to save the output")
+    parser.add_argument(
+        "--textregion_annotations_dir",
+        type=str,
+        default=None,
+        help="Path to TextRegion-generated binary masks (e.g., outputs or sam2_group_output_dir). "
+            "If provided, the pipeline will use these masks to validate/flip dynamic_map."
+    )
     return parser
 
 def load_model(args, device):

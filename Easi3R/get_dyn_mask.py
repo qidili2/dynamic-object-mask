@@ -223,7 +223,7 @@ from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
 # -----------------------------
 # --- Configuration (edit)  ---
 # -----------------------------
-input_path = "/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dogs-jump"  # video file or a directory of frames
+input_path = "/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/mallard-water"  # video file or a directory of frames
 model_path = "./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth"
 device_str = "cuda"
 image_size = 512        # {224, 512}
@@ -476,7 +476,8 @@ def main():
         flow_loss_thre=25, use_self_mask=True,
         num_total_iter=0, empty_cache=False,
         batchify=True, use_atten_mask=True, use_region_pooling = True,
-        sam2_group_output_dir = "/mnt/data0/andy/Easi3R/sam2_region_track/dogs-jump",
+        sam2_group_output_dir = "/mnt/data0/andy/Easi3R/sam2_region_track/mallard-water",
+        textregion_annotations_dir = "/mnt/data0/andy/Easi3R/third_party/TextRegion/davis_simplelabel_out2",
         sam2_mask_refine=False
     )
 

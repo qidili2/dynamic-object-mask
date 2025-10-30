@@ -40,6 +40,8 @@ import csv
 import re
 from collections import defaultdict
 import uuid
+import sys, subprocess, tempfile, yaml
+import cv2
 
 def c2w_to_tumpose(c2w):
     """
@@ -87,7 +89,8 @@ class BasePCOptimizer (nn.Module):
                          verbose=True,
                          use_atten_mask=False,
                          use_region_pooling = False,
-                         sam2_group_output_dir = None):
+                         sam2_group_output_dir = None,
+                         textregion_annotations_dir = None):
         super().__init__()
         if not isinstance(view1['idx'], list):
             view1['idx'] = view1['idx'].tolist()
@@ -99,7 +102,9 @@ class BasePCOptimizer (nn.Module):
         self.verbose = verbose
         self.empty_cache = empty_cache
         self.n_imgs = self._check_edges()
-
+        self.sam2_group_output_dir = sam2_group_output_dir
+        self.textregion_annotations_dir = textregion_annotations_dir
+        
         # input data
         pred1_pts = pred1['pts3d']
         pred2_pts = pred2['pts3d_in_other_view']
@@ -224,7 +229,15 @@ class BasePCOptimizer (nn.Module):
             dynamic_map = (1-self.cross_att_k_i_mean_fused) * self.cross_att_k_i_var_fused * self.cross_att_k_j_mean_fused * (1-self.cross_att_k_j_var_fused)
             dynamic_map_min = dynamic_map.min(dim=1, keepdim=True)[0].min(dim=2, keepdim=True)[0] # B, 1, 1
             dynamic_map_max = dynamic_map.max(dim=1, keepdim=True)[0].max(dim=2, keepdim=True)[0] # B, 1, 1
+            
             self.dynamic_map = (dynamic_map - dynamic_map_min) / (dynamic_map_max - dynamic_map_min + 1e-6)
+
+            
+            if os.path.exists(textregion_annotations_dir):
+                self.validate_and_adjust_dynamic_map_with_gt(textregion_annotations_dir)
+            else:
+                print(f"[TR Validation] GT directory not found: {textregion_annotations_dir}")
+                
             try:
                 print("Starting variance analysis...")
                 variances, attention_values = self.compute_region_attention_variance_and_visualize(
@@ -245,8 +258,553 @@ class BasePCOptimizer (nn.Module):
             self.stacked_feat = torch.stack(stacked_feat).float().detach()
 
             self.refined_dynamic_map, self.dynamic_map_labels = cluster_attention_maps(self.stacked_feat, self.dynamic_map, n_clusters=64)
+            
+    # @torch.no_grad()
+    # def validate_and_adjust_dynamic_map_with_gt(self,
+    #                                         textregion_root: str,
+    #                                         prefer_npy: bool = True,
+    #                                         bin_suffix: str = "_bin",
+    #                                         use_first_frame: bool = True):
+    #     """
+    #     使用GT annotations验证dynamic map的方向性，如果GT objects区域的attention普遍较低，
+    #     则反转dynamic map
+        
+    #     Args:
+    #         gt_annotations_dir: GT标注目录路径，如 '/mnt/data0/andy/Easi3R/DAVIS/Annotations/480p'
+        
+    #     Returns:
+    #         bool: 是否进行了反转
+    #     """
 
+    #     if not hasattr(self, 'dynamic_map') or self.dynamic_map is None:
+    #         print("[TR Validation] dynamic_map not found, skipping validation")
+    #         return False
+    #     if not hasattr(self, 'img_pathes') or self.img_pathes is None or len(self.img_pathes) == 0:
+    #         print("[TR Validation] img_pathes not found, cannot match TextRegion masks")
+    #         return False
 
+    #     def _seq_and_stem(img_path: str):
+    #         # 解析 sequence 名与帧名（不含扩展名）
+    #         parts = img_path.split('/')
+    #         if 'JPEGImages' in parts:
+    #             i = parts.index('JPEGImages')
+    #             if len(parts) <= i + 2:
+    #                 return None, None
+    #             seq = parts[i + 2]                           # e.g. "kite-surf"
+    #             stem = os.path.splitext(parts[-1])[0]        # e.g. "00000"
+    #             return seq, stem
+    #         # 兜底（路径不含 JPEGImages）
+    #         seq = os.path.basename(os.path.dirname(img_path))
+    #         stem = os.path.splitext(os.path.basename(img_path))[0]
+    #         return seq, stem
+
+    #     # 收集前景/背景 attention
+    #     fg_scores, bg_scores = [], []
+
+    #     frames = range(1) if use_first_frame else range(self.n_imgs)
+
+    #     for frame_idx in frames:
+    #         img_path = self.img_pathes[frame_idx]
+    #         seq, stem = _seq_and_stem(img_path)
+    #         if seq is None or stem is None:
+    #             print(f"[TR Validation] Warning: cannot parse seq/stem from {img_path}")
+    #             continue
+
+    #         # TextRegion 二值文件路径
+    #         seq_dir = os.path.join(textregion_root, seq)
+    #         npy_path = os.path.join(seq_dir, f"{stem}{bin_suffix}.npy")
+    #         png_path = os.path.join(seq_dir, f"{stem}{bin_suffix}.png")
+
+    #         # 读取二值 mask
+    #         bin_mask = None
+    #         if prefer_npy and os.path.exists(npy_path):
+    #             try:
+    #                 bin_mask = np.load(npy_path).astype(np.uint8)
+    #                 print(f"[TR Validation] loaded {npy_path}")
+    #             except Exception as e:
+    #                 print(f"[TR Validation] failed to load {npy_path}: {e}")
+    #         if bin_mask is None and os.path.exists(png_path):
+    #             m = cv2.imread(png_path, cv2.IMREAD_GRAYSCALE)
+    #             if m is None:
+    #                 print(f"[TR Validation] cannot read {png_path}")
+    #             else:
+    #                 bin_mask = (m > 127).astype(np.uint8)
+    #                 print(f"[TR Validation] loaded {png_path}")
+    #         if bin_mask is None and not prefer_npy and os.path.exists(npy_path):
+    #             try:
+    #                 bin_mask = np.load(npy_path).astype(np.uint8)
+    #                 print(f"[TR Validation] loaded {npy_path}")
+    #             except Exception as e:
+    #                 print(f"[TR Validation] failed to load {npy_path}: {e}")
+
+    #         if bin_mask is None:
+    #             print(f"[TR Validation] mask not found for {seq}/{stem} under {textregion_root}")
+    #             continue
+
+    #         # 尺寸对齐到 dynamic_map
+    #         H_att, W_att = self.dynamic_map.shape[1], self.dynamic_map.shape[2]
+    #         if bin_mask.shape != (H_att, W_att):
+    #             bin_mask = cv2.resize(bin_mask.astype(np.uint8), (W_att, H_att), interpolation=cv2.INTER_NEAREST)
+
+    #         dm = self.dynamic_map[frame_idx]
+    #         obj = (bin_mask > 0)
+    #         bg  = ~obj
+
+    #         if obj.sum() == 0 or bg.sum() == 0:
+    #             print(f"[TR Validation] frame {frame_idx}: foreground/background pixels missing, skip.")
+    #             continue
+
+    #         fg_scores.extend(dm[obj].detach().cpu().numpy().tolist())
+    #         bg_scores.extend(dm[bg].detach().cpu().numpy().tolist())
+
+    #         if use_first_frame:
+    #             break  # 只用首帧时立刻退出
+
+    #     if len(fg_scores) == 0:
+    #         print("[TR Validation] No valid foreground scores collected (missing masks?)")
+    #         return False
+
+    #     mean_fg = float(np.mean(fg_scores))
+    #     mean_bg = float(np.mean(bg_scores)) if len(bg_scores) > 0 else 0.5
+
+    #     print("[TR Validation] Statistics from TextRegion masks:")
+    #     print(f"  Foreground mean attention: {mean_fg:.4f}")
+    #     print(f"  Background mean attention: {mean_bg:.4f}")
+    #     print(f"  Total FG pixels: {len(fg_scores)}")
+    #     print(f"  Total BG pixels: {len(bg_scores)}")
+        
+    #     # 判定是否翻转
+    #     should_invert = mean_fg < mean_bg
+    #     if should_invert:
+    #         print("[TR Validation] Foreground attention LOWER than background -> invert dynamic_map")
+    #         self.dynamic_map = 1.0 - self.dynamic_map
+    #         if hasattr(self, 'refined_dynamic_map') and self.refined_dynamic_map is not None:
+    #             self.refined_dynamic_map = 1.0 - self.refined_dynamic_map
+    #             print("[TR Validation] Also inverted refined_dynamic_map")
+
+    #         # 仅打印翻转后的统计（基于已有分数 1-x）
+    #         inv_fg = [1.0 - s for s in fg_scores]
+    #         inv_bg = [1.0 - s for s in bg_scores]
+    #         print("[TR Validation] After inversion:")
+    #         print(f"  Foreground mean attention: {np.mean(inv_fg):.4f}")
+    #         print(f"  Background mean attention: {np.mean(inv_bg):.4f}")
+    #     else:
+    #         print("[TR Validation] Direction looks correct (no inversion).")
+
+    #     # **新增**: 保存flip状态，供后续filter使用
+    #     self.dynamic_map_was_inverted = should_invert
+    #     print(f"[TR Validation] *** Set dynamic_map_was_inverted = {should_invert} ***")
+        
+    #     return should_invert
+    @torch.no_grad()
+    def validate_and_adjust_dynamic_map_with_gt(self,
+                                            textregion_root: str,
+                                            prefer_npy: bool = True,
+                                            bin_suffix: str = "_bin",
+                                            min_object_area_ratio: float = 0.01,
+                                            foreground_overlap_threshold: float = 0.8,
+                                            min_frames_ratio: float = 0.8):
+        """
+        使用GT annotations验证dynamic map的方向性，如果GT objects区域的attention普遍较低，
+        则反转dynamic map
+        
+        改进的flip判断逻辑：
+        - 使用跨帧的object attention（而不是只看第一帧）
+        - 使用跨帧的平均面积判断object大小
+        - 放宽前景判断：只要object有30%以上在前景区域就算前景object
+        - 过滤太小的objects（面积比例 < min_object_area_ratio）
+        - 过滤出现帧数太少的objects（帧数比例 < min_frames_ratio）
+        - 找到前景中最高attention的object
+        - 用这个object的mean attention vs 背景的mean attention来判断是否flip
+        
+        Args:
+            textregion_root: TextRegion标注目录路径
+            prefer_npy: 是否优先读取.npy文件
+            bin_suffix: 二值文件后缀
+            use_first_frame: 是否只使用第一帧来判断前景/背景归属
+            min_object_area_ratio: 最小object面积比例（相对于前景总面积），防止边缘小object
+            foreground_overlap_threshold: object至少要有多少比例在前景区域才算前景object（默认30%）
+            min_frames_ratio: object至少要在多少比例的帧中出现才有效（默认30%）
+        
+        Returns:
+            bool: 是否进行了反转
+        """
+
+        if not hasattr(self, 'dynamic_map') or self.dynamic_map is None:
+            print("[TR Validation] dynamic_map not found, skipping validation")
+            return False
+        if not hasattr(self, 'img_pathes') or self.img_pathes is None or len(self.img_pathes) == 0:
+            print("[TR Validation] img_pathes not found, cannot match TextRegion masks")
+            return False
+        if not hasattr(self, 'region_groups') or self.region_groups is None:
+            print("[TR Validation] region_groups not found, cannot analyze objects across frames")
+            return False
+
+        def _seq_and_stem(img_path: str):
+            # 解析 sequence 名与帧名（不含扩展名）
+            parts = img_path.split('/')
+            if 'JPEGImages' in parts:
+                i = parts.index('JPEGImages')
+                if len(parts) <= i + 2:
+                    return None, None
+                seq = parts[i + 2]                           # e.g. "kite-surf"
+                stem = os.path.splitext(parts[-1])[0]        # e.g. "00000"
+                return seq, stem
+            # 兜底（路径不含 JPEGImages）
+            seq = os.path.basename(os.path.dirname(img_path))
+            stem = os.path.splitext(os.path.basename(img_path))[0]
+            return seq, stem
+
+        # Step 1: 读取第一帧的textregion mask，用于判断哪些objects属于前景
+        frame_idx = 0
+        img_path = self.img_pathes[frame_idx]
+        seq, stem = _seq_and_stem(img_path)
+        if seq is None or stem is None:
+            print(f"[TR Validation] Warning: cannot parse seq/stem from {img_path}")
+            return False
+
+        # TextRegion 二值文件路径
+        seq_dir = os.path.join(textregion_root, seq)
+        npy_path = os.path.join(seq_dir, f"{stem}{bin_suffix}.npy")
+        png_path = os.path.join(seq_dir, f"{stem}{bin_suffix}.png")
+
+        # 读取二值 mask
+        bin_mask = None
+        if prefer_npy and os.path.exists(npy_path):
+            try:
+                bin_mask = np.load(npy_path).astype(np.uint8)
+                print(f"[TR Validation] loaded {npy_path}")
+            except Exception as e:
+                print(f"[TR Validation] failed to load {npy_path}: {e}")
+        if bin_mask is None and os.path.exists(png_path):
+            m = cv2.imread(png_path, cv2.IMREAD_GRAYSCALE)
+            if m is None:
+                print(f"[TR Validation] cannot read {png_path}")
+            else:
+                bin_mask = (m > 127).astype(np.uint8)
+                print(f"[TR Validation] loaded {png_path}")
+        if bin_mask is None and not prefer_npy and os.path.exists(npy_path):
+            try:
+                bin_mask = np.load(npy_path).astype(np.uint8)
+                print(f"[TR Validation] loaded {npy_path}")
+            except Exception as e:
+                print(f"[TR Validation] failed to load {npy_path}: {e}")
+
+        if bin_mask is None:
+            print(f"[TR Validation] mask not found for {seq}/{stem} under {textregion_root}")
+            return False
+
+        # Step 2: 分析第一帧的region_groups，判断每个object是否为前景object
+        from scipy import ndimage
+        
+        # 获取第一帧的region_groups并转换为tensor
+        first_frame_groups = self.region_groups[frame_idx]
+        if not isinstance(first_frame_groups, torch.Tensor):
+            first_frame_groups = torch.tensor(first_frame_groups, device=self.dynamic_map.device)
+        else:
+            first_frame_groups = first_frame_groups.to(self.dynamic_map.device)
+        
+        # **关键修改**: textregion_mask需要resize到与region_groups相同的尺寸（高分辨率）
+        # 而不是dynamic_map的尺寸（token级别）
+        H_rg, W_rg = first_frame_groups.shape
+        print(f"[TR Validation] Region groups shape: {H_rg} x {W_rg}")
+        print(f"[TR Validation] Dynamic map shape: {self.dynamic_map.shape[1]} x {self.dynamic_map.shape[2]}")
+        
+        if bin_mask.shape != (H_rg, W_rg):
+            bin_mask = cv2.resize(bin_mask.astype(np.uint8), (W_rg, H_rg), interpolation=cv2.INTER_NEAREST)
+            print(f"[TR Validation] Resized textregion mask to {H_rg} x {W_rg}")
+        
+        textregion_mask = torch.from_numpy(bin_mask).bool().to(first_frame_groups.device)
+        
+        # 获取所有unique object IDs
+        all_object_ids = torch.unique(first_frame_groups)
+        all_object_ids = all_object_ids[all_object_ids != 0].tolist()  # 排除background(0)
+        
+        print(f"\n[TR Validation] Analyzing {len(all_object_ids)} objects across all frames...")
+        
+        # 判断每个object是否为前景object（基于第一帧）
+        foreground_objects = set()
+        background_objects = set()
+        
+        for obj_id in all_object_ids:
+            obj_mask = (first_frame_groups == obj_id)
+            obj_pixels = obj_mask.sum().item()
+            
+            if obj_pixels == 0:
+                continue
+            
+            # 计算该object在textregion前景中的比例
+            obj_in_foreground = (obj_mask & textregion_mask).sum().item()
+            foreground_ratio = obj_in_foreground / obj_pixels
+            
+            # **放宽判断**：只要有30%以上在前景区域，就认为是前景object
+            if foreground_ratio >= foreground_overlap_threshold:
+                foreground_objects.add(obj_id)
+                status = "FOREGROUND"
+            else:
+                background_objects.add(obj_id)
+                status = "BACKGROUND"
+            
+            print(f"  Object {obj_id}: {obj_in_foreground}/{obj_pixels} ({foreground_ratio*100:.1f}%) in textregion -> {status}")
+        
+        print(f"\n[TR Validation] Classification: {len(foreground_objects)} foreground objects, {len(background_objects)} background objects")
+        
+        if len(foreground_objects) == 0:
+            print("[TR Validation] WARNING: No foreground objects found!")
+            return False
+        
+        # **修改**: 计算前景objects的跨帧平均面积，用于过滤太小的objects
+        print(f"\n[TR Validation] Computing cross-frame average size for foreground objects...")
+        
+        foreground_object_avg_areas = {}
+        total_foreground_pixels_avg = 0
+        
+        # Step 1: 计算每个前景object的跨帧平均大小
+        for obj_id in foreground_objects:
+            obj_sizes = []  # 记录该object在每一帧的大小
+            
+            for frame_idx in range(self.n_imgs):
+                frame_groups = self.region_groups[frame_idx]
+                if not isinstance(frame_groups, torch.Tensor):
+                    frame_groups = torch.tensor(frame_groups, device=self.dynamic_map.device)
+                else:
+                    frame_groups = frame_groups.to(self.dynamic_map.device)
+                
+                obj_mask = (frame_groups == obj_id)
+                obj_pixels = obj_mask.sum().item()
+                
+                if obj_pixels > 0:
+                    obj_sizes.append(obj_pixels)
+            
+            # 计算该object的平均大小
+            if len(obj_sizes) > 0:
+                avg_pixels = np.mean(obj_sizes)
+                foreground_object_avg_areas[obj_id] = {
+                    'avg_pixels': avg_pixels,
+                    'frames_present': len(obj_sizes),
+                    'min_pixels': min(obj_sizes),
+                    'max_pixels': max(obj_sizes)
+                }
+                total_foreground_pixels_avg += avg_pixels
+        
+        # Step 2: 计算面积比例（相对于所有前景objects的总平均面积）
+        for obj_id in foreground_object_avg_areas:
+            avg_pixels = foreground_object_avg_areas[obj_id]['avg_pixels']
+            ratio = avg_pixels / total_foreground_pixels_avg if total_foreground_pixels_avg > 0 else 0
+            foreground_object_avg_areas[obj_id]['ratio'] = ratio
+            
+            print(f"  Object {obj_id}: avg_size={avg_pixels:.1f} pixels "
+                  f"(ratio={ratio*100:.2f}%, frames={foreground_object_avg_areas[obj_id]['frames_present']})")
+        
+        # Step 3: 过滤掉太小的前景objects（基于跨帧平均面积）
+        # 以及过滤出现帧数太少的objects
+        valid_foreground_objects = set()
+        filtered_small_objects = []
+        filtered_short_duration_objects = []
+        
+        for obj_id in foreground_objects:
+            if obj_id not in foreground_object_avg_areas:
+                # 该object在所有帧都不存在（理论上不应该发生）
+                filtered_short_duration_objects.append(obj_id)
+                continue
+            
+            info = foreground_object_avg_areas[obj_id]
+            frames_ratio = info['frames_present'] / self.n_imgs
+            
+            # 检查是否满足最小帧数要求
+            if frames_ratio < min_frames_ratio:
+                filtered_short_duration_objects.append(obj_id)
+                continue
+            
+            # 检查是否满足最小面积要求
+            if info['ratio'] < min_object_area_ratio:
+                filtered_small_objects.append(obj_id)
+                continue
+            
+            # 通过所有检查
+            valid_foreground_objects.add(obj_id)
+        
+        # 打印过滤信息
+        if len(filtered_small_objects) > 0:
+            print(f"\n[TR Validation] Filtered {len(filtered_small_objects)} small foreground objects (< {min_object_area_ratio*100:.1f}% of avg foreground):")
+            for obj_id in filtered_small_objects[:5]:  # 只打印前5个
+                if obj_id in foreground_object_avg_areas:
+                    info = foreground_object_avg_areas[obj_id]
+                    print(f"  Object {obj_id}: avg_size={info['avg_pixels']:.1f} pixels ({info['ratio']*100:.2f}%)")
+            if len(filtered_small_objects) > 5:
+                print(f"  ... and {len(filtered_small_objects)-5} more")
+        else:
+            print(f"\n[TR Validation] No small foreground object Exist")
+        
+        if len(filtered_short_duration_objects) > 0:
+            print(f"\n[TR Validation] Filtered {len(filtered_short_duration_objects)} short-duration foreground objects (< {min_frames_ratio*100:.1f}% of frames):")
+            for obj_id in filtered_short_duration_objects[:5]:  # 只打印前5个
+                if obj_id in foreground_object_avg_areas:
+                    info = foreground_object_avg_areas[obj_id]
+                    frames_ratio = info['frames_present'] / self.n_imgs
+                    print(f"  Object {obj_id}: present in {info['frames_present']}/{self.n_imgs} frames ({frames_ratio*100:.1f}%)")
+            if len(filtered_short_duration_objects) > 5:
+                print(f"  ... and {len(filtered_short_duration_objects)-5} more")
+        else:
+            print(f"\n[TR Validation] No short-duration foreground object Exist")
+        
+        if len(valid_foreground_objects) == 0:
+            print("[TR Validation] WARNING: No valid foreground objects after filtering small ones!")
+            print(f"[TR Validation] Try lowering min_object_area_ratio (current: {min_object_area_ratio})")
+            return False
+        
+        print(f"[TR Validation] Valid foreground objects: {len(valid_foreground_objects)} (after filtering small ones)")
+        
+        # Step 3: 计算每个object在所有帧上的平均attention
+        print(f"\n[TR Validation] Computing cross-frame attention for each object...")
+        
+        # 获取dynamic_map的尺寸（token级别）
+        H_att, W_att = self.dynamic_map.shape[1], self.dynamic_map.shape[2]
+        print(f"[TR Validation] Attention map is at token level: {H_att} x {W_att}")
+        
+        object_attentions = {}  # {obj_id: mean_attention_across_frames}
+        
+        for obj_id in all_object_ids:
+            # 收集该object在所有帧上的attention
+            obj_att_values = []
+            
+            for frame_idx in range(self.n_imgs):
+                # 获取该帧的region_groups（高分辨率）
+                frame_groups = self.region_groups[frame_idx]
+                if not isinstance(frame_groups, torch.Tensor):
+                    frame_groups = torch.tensor(frame_groups, device=self.dynamic_map.device)
+                else:
+                    frame_groups = frame_groups.to(self.dynamic_map.device)
+                
+                # 创建该object的mask（高分辨率）
+                obj_mask_hr = (frame_groups == obj_id)  # [H_rg, W_rg]
+                
+                if obj_mask_hr.sum() == 0:
+                    continue  # 该object在这一帧不存在
+                
+                # **关键修改**: 将高分辨率mask下采样到token级别
+                # 使用max pooling: 如果patch中有任何像素属于该object，则该token属于该object
+                H_rg, W_rg = frame_groups.shape
+                patch_size = H_rg // H_att  # 假设是整数倍，通常是16
+                
+                # 下采样到token级别
+                obj_mask_token = torch.nn.functional.max_pool2d(
+                    obj_mask_hr.float().unsqueeze(0).unsqueeze(0),
+                    kernel_size=patch_size,
+                    stride=patch_size
+                ).squeeze().bool()  # [H_att, W_att]
+                
+                if obj_mask_token.sum() == 0:
+                    continue
+                
+                # 获取该object在这一帧的attention
+                frame_att = self.dynamic_map[frame_idx]  # [H_att, W_att]
+                obj_att = frame_att[obj_mask_token].detach().cpu().numpy()
+                obj_att_values.extend(obj_att.tolist())
+            
+            if len(obj_att_values) > 0:
+                mean_att = float(np.mean(obj_att_values))
+                object_attentions[obj_id] = mean_att
+                
+                # 判断该object的类型，并标记
+                if obj_id in valid_foreground_objects:
+                    obj_type = "FG"
+                elif obj_id in filtered_small_objects:
+                    obj_type = "FG-small"  # 前景但太小被过滤
+                elif obj_id in filtered_short_duration_objects:
+                    obj_type = "FG-short"  # 前景但出现时间太短被过滤
+                elif obj_id in foreground_objects:
+                    obj_type = "FG-filtered"  # 前景但被其他原因过滤
+                else:
+                    obj_type = "BG"
+                
+                print(f"  Object {obj_id} ({obj_type}): mean_att={mean_att:.4f} (from {len(obj_att_values)} pixels across frames)")
+        
+        # Step 4: 找到前景objects中attention最高的
+        # **修改**: 只考虑valid_foreground_objects（已过滤小objects）
+        foreground_attentions = {obj_id: att for obj_id, att in object_attentions.items() 
+                                if obj_id in valid_foreground_objects}
+        background_attentions = {obj_id: att for obj_id, att in object_attentions.items() 
+                                if obj_id in background_objects}
+        
+        if len(foreground_attentions) == 0:
+            print("[TR Validation] WARNING: No valid foreground objects with attention!")
+            return False
+        
+        # 找到前景中最高attention的object
+        max_fg_obj_id = max(foreground_attentions, key=foreground_attentions.get)
+        max_fg_attention = foreground_attentions[max_fg_obj_id]
+        
+        # 计算背景的平均attention
+        if len(background_attentions) > 0:
+            mean_bg_attention = float(np.mean(list(background_attentions.values())))
+        else:
+            # 如果没有背景objects，直接计算背景像素的attention
+            # 需要将textregion_mask下采样到token级别
+            H_rg, W_rg = first_frame_groups.shape
+            H_att, W_att = self.dynamic_map.shape[1], self.dynamic_map.shape[2]
+            patch_size = H_rg // H_att
+            
+            # 下采样textregion_mask到token级别（使用min pooling，只要patch中有任何背景像素就算背景）
+            bg_mask_hr = ~textregion_mask  # 高分辨率背景mask
+            bg_mask_token = torch.nn.functional.max_pool2d(
+                bg_mask_hr.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=patch_size,
+                stride=patch_size
+            ).squeeze().bool()  # [H_att, W_att]
+            
+            bg_att_values = []
+            for frame_idx in range(self.n_imgs):
+                frame_att = self.dynamic_map[frame_idx]
+                bg_att = frame_att[bg_mask_token].detach().cpu().numpy()
+                bg_att_values.extend(bg_att.tolist())
+            mean_bg_attention = float(np.mean(bg_att_values)) if len(bg_att_values) > 0 else 0.5
+        
+        # Step 5: 判断是否需要flip
+        print(f"\n[TR Validation] ========== FLIP DECISION ==========")
+        print(f"  Foreground objects: {len(foreground_attentions)}")
+        print(f"    -> Highest attention: Object {max_fg_obj_id} = {max_fg_attention:.4f}")
+        if len(foreground_attentions) > 1:
+            sorted_fg = sorted(foreground_attentions.items(), key=lambda x: x[1], reverse=True)
+            print(f"    -> Top 3 foreground objects:")
+            for obj_id, att in sorted_fg[:min(3, len(sorted_fg))]:
+                print(f"       Object {obj_id}: {att:.4f}")
+        
+        print(f"  Background mean attention: {mean_bg_attention:.4f}")
+        if len(background_attentions) > 0:
+            print(f"    -> From {len(background_attentions)} background objects")
+        else:
+            print(f"    -> From background pixels (no background objects)")
+        
+        should_invert = max_fg_attention < mean_bg_attention
+        
+        if should_invert:
+            print(f"\n[TR Validation] DECISION: FLIP (YES)")
+            print(f"  Reason: Highest FG object attention ({max_fg_attention:.4f}) < Background ({mean_bg_attention:.4f})")
+            print(f"  -> This suggests HIGH attention = STATIC, so we INVERT")
+            
+            self.dynamic_map = 1.0 - self.dynamic_map
+            if hasattr(self, 'refined_dynamic_map') and self.refined_dynamic_map is not None:
+                self.refined_dynamic_map = 1.0 - self.refined_dynamic_map
+                print("[TR Validation] Also inverted refined_dynamic_map")
+
+            # 打印翻转后的统计
+            inv_max_fg = 1.0 - max_fg_attention
+            inv_mean_bg = 1.0 - mean_bg_attention
+            print(f"[TR Validation] After inversion:")
+            print(f"  Highest FG object attention: {inv_max_fg:.4f}")
+            print(f"  Background mean attention: {inv_mean_bg:.4f}")
+        else:
+            print(f"\n[TR Validation] DECISION: NO FLIP")
+            print(f"  Reason: Highest FG object attention ({max_fg_attention:.4f}) >= Background ({mean_bg_attention:.4f})")
+            print(f"  -> Direction looks correct, no inversion needed")
+
+        # 保存flip状态，供后续filter使用
+        self.dynamic_map_was_inverted = should_invert
+        print(f"\n[TR Validation] *** Set dynamic_map_was_inverted = {should_invert} ***")
+        print(f"[TR Validation] =======================================\n")
+        
+        return should_invert
     # # 引用region级别token的help function
     # def _downsample_mask_to_tokens(self, mask_bhw, H_img, W_img, patch=16):
     #     """
@@ -1146,7 +1704,232 @@ class BasePCOptimizer (nn.Module):
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{video_mask_path}"')
- 
+            
+    def generate_whole_masks_from_grid(
+        self, 
+        img_rgb, 
+        min_size=500, 
+        grid=32,
+        fill_background=True,      # 新增：是否用小mask填补背景
+        small_min_size=100,        # 新增：小mask的最小面积
+        small_grid=64              # 新增：用于生成小mask的更密集grid
+    ):
+        """
+        基于 LangSplat 完整逻辑：
+        1. 用网格点生成 whole (large) masks，占领主要区域
+        2. 如果 fill_background=True，用更密集的grid生成small masks填补背景
+        3. 返回分层的、非重叠的 segmentation masks
+        
+        返回：按面积从大到小的 mask 列表
+        """
+        import numpy as np
+        import torch
+        H, W, _ = img_rgb.shape
+
+        # ===== 步骤1: 构建 SAM2 predictor =====
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        sam2 = build_sam2(
+            "configs/sam2.1/sam2.1_hiera_l.yaml",
+            "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
+            device=device
+        )
+        predictor = SAM2ImagePredictor(sam2)
+        predictor.set_image(img_rgb)
+        
+        # ===== 步骤2: 生成 LARGE (whole) masks =====
+        print(f"[LangSplat] Generating LARGE masks from {grid}x{grid} grid...")
+        
+        def generate_masks_from_grid(predictor, H, W, grid_size, select_mode='largest'):
+            """
+            从grid生成masks
+            select_mode: 'largest' 选最大面积, 'all' 返回所有masks
+            """
+            masks_raw = []
+            ys = np.linspace(0, H-1, grid_size, dtype=np.int32)
+            xs = np.linspace(0, W-1, grid_size, dtype=np.int32)
+            
+            for y in ys:
+                for x in xs:
+                    pts = np.array([[x, y]], dtype=np.float32)
+                    lbls = np.array([1], dtype=np.int32)
+                    
+                    out = predictor.predict(
+                        point_coords=pts, 
+                        point_labels=lbls, 
+                        multimask_output=True
+                    )
+                    
+                    if isinstance(out, dict):
+                        masks = out["masks"]
+                    elif isinstance(out, tuple):
+                        masks = out[0]
+                    else:
+                        masks = out
+                    
+                    masks = masks.astype(bool)
+                    
+                    if select_mode == 'largest':
+                        # 选择最大的mask (whole)
+                        areas = masks.reshape(masks.shape[0], -1).sum(1)
+                        k = int(np.argmax(areas))
+                        masks_raw.append({
+                            'segmentation': masks[k],
+                            'area': int(areas[k])
+                        })
+                    elif select_mode == 'smallest':
+                        # 选择最小的mask (small/part)
+                        areas = masks.reshape(masks.shape[0], -1).sum(1)
+                        k = int(np.argmin(areas))
+                        masks_raw.append({
+                            'segmentation': masks[k],
+                            'area': int(areas[k])
+                        })
+                    elif select_mode == 'all':
+                        # 返回所有masks
+                        for idx, mask in enumerate(masks):
+                            area = int(mask.sum())
+                            masks_raw.append({
+                                'segmentation': mask,
+                                'area': area
+                            })
+            
+            return masks_raw
+        
+        # 生成large masks
+        large_masks = generate_masks_from_grid(predictor, H, W, grid, select_mode='largest')
+        large_masks = [m for m in large_masks if m['area'] >= min_size]
+        print(f"[LangSplat] Generated {len(large_masks)} large masks")
+        
+        # 去重
+        def deduplicate_masks(masks, iou_threshold=0.8):
+            masks.sort(key=lambda d: d['area'], reverse=True)
+            
+            def compute_iou(mask1, mask2):
+                intersection = (mask1 & mask2).sum()
+                union = (mask1 | mask2).sum()
+                return intersection / (union + 1e-8)
+            
+            deduplicated = []
+            for d in masks:
+                m = d['segmentation']
+                is_duplicate = False
+                for kept in deduplicated:
+                    iou = compute_iou(m, kept['segmentation'])
+                    if iou > iou_threshold:
+                        is_duplicate = True
+                        break
+                if not is_duplicate:
+                    deduplicated.append(d)
+            
+            return deduplicated
+        
+        large_masks = deduplicate_masks(large_masks)
+        print(f"[LangSplat] After deduplication: {len(large_masks)} unique large masks")
+        
+        # ===== 步骤3: LangSplat 分层分配逻辑 =====
+        print(f"[LangSplat] Assigning regions in hierarchical order...")
+        
+        # -1=未分配, 0=background(最后填充), 1+=objects
+        group_ids = np.full((H, W), fill_value=-1, dtype=np.int32)
+        group_counter = 1
+        final_masks = []
+        
+        # 第一轮：分配large masks
+        print(f"[LangSplat] Round 1: Assigning {len(large_masks)} LARGE masks...")
+        for mask_dict in large_masks:
+            mask_original = mask_dict['segmentation']
+            
+            non_assigned_area = (group_ids == -1)
+            to_assign_area = mask_original & non_assigned_area
+            
+            assigned_area = to_assign_area.sum()
+            if assigned_area < min_size:
+                continue
+            
+            group_ids[to_assign_area] = group_counter
+            
+            final_masks.append({
+                'segmentation': to_assign_area,
+                'area': int(assigned_area),
+                'obj_id': group_counter,
+                'level': 'large'
+            })
+            
+            group_counter += 1
+        
+        large_assigned = group_counter - 1
+        print(f"[LangSplat] Round 1 complete: {large_assigned} large regions assigned")
+        
+        # 第二轮：如果需要，用small masks填补背景
+        if fill_background:
+            # 检查剩余未分配区域
+            remaining_area = (group_ids == -1).sum()
+            total_area = H * W
+            background_ratio = remaining_area / total_area
+            
+            print(f"[LangSplat] Remaining unassigned area: {background_ratio:.1%}")
+            
+            if background_ratio > 0.05:  # 如果背景超过5%，进行填充
+                print(f"[LangSplat] Round 2: Generating SMALL masks from {small_grid}x{small_grid} grid...")
+                
+                # 生成small masks - 选择最小的mask或中等的mask
+                small_masks = generate_masks_from_grid(
+                    predictor, H, W, small_grid, 
+                    select_mode='smallest'  # 或 'all' 获取所有尺度
+                )
+                small_masks = [m for m in small_masks if m['area'] >= small_min_size]
+                small_masks = deduplicate_masks(small_masks, iou_threshold=0.7)
+                
+                print(f"[LangSplat] Generated {len(small_masks)} small masks")
+                
+                # 按面积排序，优先分配较大的small masks
+                small_masks.sort(key=lambda d: d['area'], reverse=True)
+                
+                print(f"[LangSplat] Round 2: Filling background with small masks...")
+                for mask_dict in small_masks:
+                    mask_original = mask_dict['segmentation']
+                    
+                    non_assigned_area = (group_ids == -1)
+                    to_assign_area = mask_original & non_assigned_area
+                    
+                    assigned_area = to_assign_area.sum()
+                    if assigned_area < small_min_size:
+                        continue
+                    
+                    group_ids[to_assign_area] = group_counter
+                    
+                    final_masks.append({
+                        'segmentation': to_assign_area,
+                        'area': int(assigned_area),
+                        'obj_id': group_counter,
+                        'level': 'small'
+                    })
+                    
+                    group_counter += 1
+                
+                small_assigned = group_counter - 1 - large_assigned
+                print(f"[LangSplat] Round 2 complete: {small_assigned} small regions assigned")
+                
+                # 最终剩余
+                final_remaining = (group_ids == -1).sum()
+                final_background_ratio = final_remaining / total_area
+                print(f"[LangSplat] Final unassigned area: {final_background_ratio:.1%}")
+        
+        # 将剩余未分配区域标记为background (0)
+        group_ids[group_ids == -1] = 0
+        
+        print(f"[LangSplat] Total regions: {len(final_masks)} " +
+            f"(large: {sum(1 for m in final_masks if m['level']=='large')}, " +
+            f"small: {sum(1 for m in final_masks if m['level']=='small')})")
+        
+        # 按面积排序：large在前，small在后
+        final_masks.sort(key=lambda d: (d['level'] != 'large', -d['area']))
+        
+        return final_masks
+
     @torch.no_grad()
     def generate_region_groups_with_tracking(
         self,
@@ -1300,23 +2083,24 @@ class BasePCOptimizer (nn.Module):
                 pred_iou_thresh=0.75,
                 output_mode="binary_mask",
             )
-        else:
-            from sam2.build_sam import build_sam2
-            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-            with torch.cuda.amp.autocast(enabled=False):
-                sam2_amg = build_sam2(
-                    "configs/sam2.1/sam2.1_hiera_l.yaml", 
-                    "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
-                    device=device
-                )
-                sam2_amg = convert_to_float32_comprehensive(sam2_amg)
-                sam2_amg = _force_to_cuda(sam2_amg, name="SAM2_AMG")
-                amg = SAM2AutomaticMaskGenerator(
-                    sam2_amg,
-                    crop_n_layers=0,
-                    pred_iou_thresh=0.75,
-                    output_mode="binary_mask",
-                )
+        # else:
+        #     from sam2.build_sam import build_sam2
+        #     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+        #     with torch.cuda.amp.autocast(enabled=False):
+        #         sam2_amg = build_sam2(
+        #             "configs/sam2.1/sam2.1_hiera_l.yaml", 
+        #             "third_party/sam2/checkpoints/sam2.1_hiera_large.pt",
+        #             device=device
+        #         )
+        #         sam2_amg = convert_to_float32_comprehensive(sam2_amg)
+        #         sam2_amg = _force_to_cuda(sam2_amg, name="SAM2_AMG")
+        #         amg = SAM2AutomaticMaskGenerator(
+        #             sam2_amg,
+        #             crop_n_layers=0,
+        #             pred_iou_thresh=0.75,
+        #             output_mode="binary_mask",
+        #         )
+            
         
         # 构建SAM2 video predictor用于追踪
         print(f"[SAM→SAM2] Building SAM2 video predictor...")
@@ -1362,15 +2146,20 @@ class BasePCOptimizer (nn.Module):
             print(f"[SAM→SAM2] Generating initial SAM masks on frame 0...")
             img_rgb = (self.imgs[0] * 255).astype(np.uint8)
             
-            with torch.cuda.amp.autocast(enabled=False):
-                sam_results = amg.generate(img_rgb)
+            sam_results = self.generate_whole_masks_from_grid(
+                img_rgb, min_size=min_size
+            )
+            sam_results = sam_results[:max_objects]
+
+            print(f"[SAM→SAM2] Selected {len(sam_results)} initial masks " f"({'SAM1-AMG' if USE_SAM else 'SAM2-grid-whole'})")
+            # with torch.cuda.amp.autocast(enabled=False):
+            #     sam_results = amg.generate(img_rgb)
             
-            # 筛选和排序SAM结果
-            sam_results = sorted(sam_results, key=lambda x: x['area'], reverse=True)
-            sam_results = [r for r in sam_results if r['area'] >= min_size][:max_objects]
+            # # 筛选和排序SAM结果
+            # sam_results = sorted(sam_results, key=lambda x: x['area'], reverse=True)
+            # sam_results = [r for r in sam_results if r['area'] >= min_size][:max_objects]
             
-            print(f"[SAM→SAM2] Selected {len(sam_results)} high-quality masks from SAM")
-            
+            # print(f"[SAM→SAM2] Selected {len(sam_results)} high-quality masks from SAM")
             # 可视化初始SAM结果
             if vis_dir:
                 H, W = self.imshapes[0]
@@ -1568,8 +2357,9 @@ class BasePCOptimizer (nn.Module):
         return region_groups
     
     
+
     # @torch.no_grad()
-    # def compute_region_attention_variance_and_visualize(self, save_folder='demo_tmp/region_variance_vis'):
+    # def compute_region_attention_variance_and_visualize(self, save_folder='demo_tmp/region_variance_vis', window_size=5):
     #     """
     #     计算每个region object在所有帧上mean pool后的attention方差，
     #     并生成基于方差的可视化（方差越大越红）
@@ -1664,18 +2454,45 @@ class BasePCOptimizer (nn.Module):
         
     #     print(f"Computed variance for {len(object_variances)} objects")
         
-    #     # 归一化方差到[0,1]范围用于颜色映射
+    #     # 归一化方差到[0,1]范围用于颜色映射 - 最高方差设为1.0
     #     if object_variances:
-    #         min_var = min(object_variances.values())
-    #         max_var = max(object_variances.values())
-    #         var_range = max_var - min_var
+    #         # Set alpha parameter (e.g., 0.1 means use 90th percentile as max)
+    #         alpha = 0.3  # You can adjust this value
+            
+    #         variances_array = np.array(list(object_variances.values()))
+            
+    #         # Calculate the (1-alpha) percentile
+    #         percentile_value = np.percentile(variances_array, (1 - alpha) * 100)
+            
+    #         # Calculate max_value using the formula: percentile_value * (1-alpha) / alpha
+    #         if alpha > 0:
+    #             max_value = percentile_value * (1 - alpha) / alpha
+    #         else:
+    #             max_value = variances_array.max()
+            
+    #         print(f"Variance normalization: alpha = {alpha}")
+    #         print(f"  {(1-alpha)*100:.0f}th percentile = {percentile_value:.6f}")
+    #         print(f"  calculated max_value = {max_value:.6f}")
+    #         print(f"  actual max variance = {variances_array.max():.6f}")
             
     #         normalized_variances = {}
     #         for obj_id, var in object_variances.items():
-    #             if var_range > 1e-8:
-    #                 normalized_variances[obj_id] = (var - min_var) / var_range
+    #             if max_value > 1e-8:  # é¿å…é™¤é›¶
+    #                 # Normalize using the calculated max_value, clip to [0, 1]
+    #                 normalized_variances[obj_id] = min(var / max_value, 1.0)
     #             else:
     #                 normalized_variances[obj_id] = 0.0
+            
+    #         # Print objects with normalized variance >= 1.0 (those above the threshold)
+    #         high_variance_objs = [obj_id for obj_id, norm_var in normalized_variances.items() if norm_var >= 1.0]
+    #         print(f"Objects with variance >= max_value (normalized to 1.0): {len(high_variance_objs)}")
+            
+    #         # Show top variance objects
+    #         sorted_vars = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)
+    #         print(f"Top objects by variance:")
+    #         for obj_id, var in sorted_vars[:5]:
+    #             norm_var = normalized_variances[obj_id]
+    #             print(f"  Object {obj_id}: variance = {var:.6f} (normalized = {norm_var:.3f})")
     #     else:
     #         normalized_variances = {}
         
@@ -1840,13 +2657,57 @@ class BasePCOptimizer (nn.Module):
     #     print(f"Videos: variance heatmap and overlay")
     #     print(f"Statistics plot: variance_analysis.png")
     #     print(f"Detailed results: variance_results.txt")
-        
+    #     object_stats = []
+    #     for obj_id in sorted(object_attention_values.keys()):
+    #         attention_values = object_attention_values[obj_id]
+            
+    #         # Calculate mean and variance of attention
+    #         mean_attention = np.mean(attention_values)
+    #         variance_attention = object_variances.get(obj_id, 0.0)
+            
+    #         # Calculate average pixel area across frames where this object appears
+    #         pixel_areas = []
+    #         for frame_idx in range(len(self.region_groups)):
+    #             group_tensor = self.region_groups[frame_idx]
+    #             obj_mask = (group_tensor == obj_id)
+    #             pixel_count = obj_mask.sum().item()
+    #             if pixel_count > 0:  # Only count frames where object exists
+    #                 pixel_areas.append(pixel_count)
+            
+    #         avg_pixel_area = np.mean(pixel_areas) if pixel_areas else 0.0
+    #         num_frames_present = len(pixel_areas)
+            
+    #         object_stats.append({
+    #             'object_id': obj_id,
+    #             'attention_mean': mean_attention,
+    #             'attention_variance': variance_attention,
+    #             'avg_pixel_area': avg_pixel_area,
+    #             'num_frames_present': num_frames_present,
+    #             'total_frames': len(self.region_groups)
+    #         })
+
+    #     # Save to CSV
+    #     csv_path = os.path.join(save_folder, 'object_statistics.csv')
+    #     with open(csv_path, 'w', newline='') as csvfile:
+    #         fieldnames = ['object_id', 'attention_mean', 'attention_variance', 
+    #                     'avg_pixel_area', 'num_frames_present', 'total_frames']
+    #         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+    #         writer.writeheader()
+    #         writer.writerows(object_stats)
+
+    #     print(f"Object statistics saved to: {csv_path}")
     #     return object_variances, object_attention_values
     @torch.no_grad()
-    def compute_region_attention_variance_and_visualize(self, save_folder='demo_tmp/region_variance_vis'):
+    def compute_region_attention_variance_and_visualize(self, save_folder='demo_tmp/region_variance_vis', window_size=5):
         """
         计算每个region object在所有帧上mean pool后的attention方差，
         并生成基于方差的可视化（方差越大越红）
+        新增：滑动窗口方差计算
+        
+        Args:
+            save_folder: 保存结果的文件夹
+            window_size: 滑动窗口大小
         """
         if not hasattr(self, 'video_segments') or not hasattr(self, 'region_groups'):
             print("Error: video_segments or region_groups not found. Please run region tracking first.")
@@ -1879,134 +2740,208 @@ class BasePCOptimizer (nn.Module):
         os.makedirs(save_folder, exist_ok=True)
         os.makedirs(os.path.join(save_folder, 'frames_variance'), exist_ok=True)
         os.makedirs(os.path.join(save_folder, 'frames_overlay'), exist_ok=True)
+        os.makedirs(os.path.join(save_folder, 'frames_mean'), exist_ok=True)  # 新增
+        os.makedirs(os.path.join(save_folder, 'frames_mean_overlay'), exist_ok=True)  # 新增
+        os.makedirs(os.path.join(save_folder, 'frames_window_variance'), exist_ok=True)
+        os.makedirs(os.path.join(save_folder, 'frames_window_overlay'), exist_ok=True)
+        os.makedirs(os.path.join(save_folder, 'window_variance_npy'), exist_ok=True)
         
         # 收集所有object的所有帧的mean pooled attention值
-        object_attention_values = defaultdict(list)  # {obj_id: [mean_att_frame1, mean_att_frame2, ...]}
-        frame_object_means = []  # [{obj_id: mean_value}, ...]  # 每帧每个object的均值
+        object_attention_values = defaultdict(list)
+        frame_object_means = []
         
         print(f"Computing mean pooled attention for {len(self.region_groups)} frames...")
         
         # 获取attention map和region groups的尺寸
-        attention_H, attention_W = attention_source.shape[1], attention_source.shape[2]  # 例如 [18, 32]
+        attention_H, attention_W = attention_source.shape[1], attention_source.shape[2]
         print(f"Attention map size: {attention_H} x {attention_W}")
         if len(self.region_groups) > 0:
-            region_H, region_W = self.region_groups[0].shape  # 例如 [288, 512] 
+            region_H, region_W = self.region_groups[0].shape
             print(f"Region groups size: {region_H} x {region_W}")
         
         for frame_idx in range(len(self.region_groups)):
             frame_means = {}
-            group_tensor = self.region_groups[frame_idx]  # [H,W] with object IDs
-            attention_map = attention_source[frame_idx]  # [H,W] attention values - 使用dynamic_map
+            group_tensor = self.region_groups[frame_idx]
+            attention_map = attention_source[frame_idx]
             
-            # 确保两个tensor在同一个设备上
             if group_tensor.device != attention_map.device:
                 attention_map = attention_map.to(group_tensor.device)
             
-            # 如果尺寸不匹配，需要将region_groups下采样到attention_map的尺寸
             if group_tensor.shape != attention_map.shape:
-                # 使用最近邻插值将region groups下采样
                 group_tensor_resized = torch.nn.functional.interpolate(
-                    group_tensor.float().unsqueeze(0).unsqueeze(0),  # [1, 1, H, W]
+                    group_tensor.float().unsqueeze(0).unsqueeze(0),
                     size=(attention_H, attention_W),
                     mode='nearest'
-                ).squeeze(0).squeeze(0).long()  # [attention_H, attention_W]
+                ).squeeze(0).squeeze(0).long()
             else:
                 group_tensor_resized = group_tensor
             
-            # 获取当前帧的所有唯一object IDs
             unique_objects = torch.unique(group_tensor_resized)
-            unique_objects = unique_objects[unique_objects != 0]  # 排除背景
+            unique_objects = unique_objects[unique_objects != 0]
             
             for obj_id in unique_objects:
                 obj_mask = (group_tensor_resized == obj_id)
-                if obj_mask.sum() > 0:  # 确保region不为空
-                    # 计算该region的mean pooled attention
+                if obj_mask.sum() > 0:
                     mean_attention = attention_map[obj_mask].mean().item()
                     object_attention_values[obj_id.item()].append(mean_attention)
                     frame_means[obj_id.item()] = mean_attention
             
             frame_object_means.append(frame_means)
         
-        # 计算每个object在所有帧上的attention方差
+        # ========== 计算全局方差和均值 ==========
         object_variances = {}
+        object_means = {}  # 新增：保存每个object的mean attention
         for obj_id, attention_values in object_attention_values.items():
-            if len(attention_values) >= 2:  # 至少需要2个值才能计算方差
+            if len(attention_values) >= 2:
                 variance = np.var(attention_values)
                 object_variances[obj_id] = variance
+                mean_val = np.mean(attention_values)
+                object_means[obj_id] = mean_val
             else:
                 object_variances[obj_id] = 0.0
+                object_means[obj_id] = attention_values[0] if len(attention_values) == 1 else 0.0
         
-        print(f"Computed variance for {len(object_variances)} objects")
+        print(f"Computed global variance for {len(object_variances)} objects")
+        print(f"Computed global mean attention for {len(object_means)} objects")
         
-        # 归一化方差到[0,1]范围用于颜色映射 - 最高方差设为1.0
+        # ========== 计算滑动窗口方差 ==========
+        print(f"\nComputing sliding window variance (window_size={window_size})...")
+        
+        window_variances = defaultdict(list)
+        
+        for obj_id, attention_values in object_attention_values.items():
+            n_frames = len(attention_values)
+            
+            for start_idx in range(n_frames - window_size + 1):
+                end_idx = start_idx + window_size
+                window_values = attention_values[start_idx:end_idx]
+                
+                if len(window_values) >= 2:
+                    window_var = np.var(window_values)
+                else:
+                    window_var = 0.0
+                
+                window_variances[obj_id].append({
+                    'start_frame': start_idx,
+                    'end_frame': end_idx - 1,
+                    'variance': window_var,
+                    'mean': np.mean(window_values)
+                })
+        
+        print(f"Computed sliding window variance for {len(window_variances)} objects")
+        
+        # 保存滑动窗口方差数据为npy
+        window_var_data = {}
+        for obj_id, windows in window_variances.items():
+            window_var_data[obj_id] = {
+                'windows': windows,
+                'attention_values': object_attention_values[obj_id]
+            }
+        
+        np.save(os.path.join(save_folder, 'window_variance_npy', 'all_objects_window_variance.npy'), 
+                window_var_data, allow_pickle=True)
+        print(f"Saved window variance data to: window_variance_npy/all_objects_window_variance.npy")
+        
+        # 新增：保存全局variance和mean数据为npy
+        global_stats_data = {}
+        for obj_id in object_attention_values.keys():
+            global_stats_data[obj_id] = {
+                'global_variance': object_variances.get(obj_id, 0.0),
+                'global_mean': object_means.get(obj_id, 0.0),
+                'attention_values': object_attention_values[obj_id]
+            }
+        
+        np.save(os.path.join(save_folder, 'window_variance_npy', 'all_objects_global_stats.npy'), 
+                global_stats_data, allow_pickle=True)
+        print(f"Saved global variance and mean data to: window_variance_npy/all_objects_global_stats.npy")
+        
+        # ========== 归一化方差 ==========
         if object_variances:
-            # Set alpha parameter (e.g., 0.1 means use 90th percentile as max)
-            alpha = 0.3  # You can adjust this value
-            
+            alpha = 0.3
             variances_array = np.array(list(object_variances.values()))
-            
-            # Calculate the (1-alpha) percentile
             percentile_value = np.percentile(variances_array, (1 - alpha) * 100)
             
-            # Calculate max_value using the formula: percentile_value * (1-alpha) / alpha
             if alpha > 0:
                 max_value = percentile_value * (1 - alpha) / alpha
             else:
                 max_value = variances_array.max()
             
-            print(f"Variance normalization: alpha = {alpha}")
+            print(f"\nVariance normalization: alpha = {alpha}")
             print(f"  {(1-alpha)*100:.0f}th percentile = {percentile_value:.6f}")
             print(f"  calculated max_value = {max_value:.6f}")
             print(f"  actual max variance = {variances_array.max():.6f}")
             
             normalized_variances = {}
             for obj_id, var in object_variances.items():
-                if max_value > 1e-8:  # é¿å…é™¤é›¶
-                    # Normalize using the calculated max_value, clip to [0, 1]
+                if max_value > 1e-8:
                     normalized_variances[obj_id] = min(var / max_value, 1.0)
                 else:
                     normalized_variances[obj_id] = 0.0
             
-            # Print objects with normalized variance >= 1.0 (those above the threshold)
-            high_variance_objs = [obj_id for obj_id, norm_var in normalized_variances.items() if norm_var >= 1.0]
-            print(f"Objects with variance >= max_value (normalized to 1.0): {len(high_variance_objs)}")
-            
-            # Show top variance objects
-            sorted_vars = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)
-            print(f"Top objects by variance:")
-            for obj_id, var in sorted_vars[:5]:
-                norm_var = normalized_variances[obj_id]
-                print(f"  Object {obj_id}: variance = {var:.6f} (normalized = {norm_var:.3f})")
+            # 归一化窗口方差
+            normalized_window_variances = defaultdict(list)
+            for obj_id, windows in window_variances.items():
+                for window_info in windows:
+                    normalized_var = min(window_info['variance'] / max_value, 1.0) if max_value > 1e-8 else 0.0
+                    normalized_window_variances[obj_id].append({
+                        **window_info,
+                        'normalized_variance': normalized_var
+                    })
         else:
             normalized_variances = {}
+            normalized_window_variances = defaultdict(list)
+        
+        # 新增：归一化mean attention
+        normalized_means = {}
+        if object_means:
+            means_array = np.array(list(object_means.values()))
+            min_mean = means_array.min()
+            max_mean = means_array.max()
+            print(f"\nMean attention normalization:")
+            print(f"  min mean = {min_mean:.6f}")
+            print(f"  max mean = {max_mean:.6f}")
+            
+            for obj_id, mean_val in object_means.items():
+                if max_mean > min_mean:
+                    normalized_means[obj_id] = (mean_val - min_mean) / (max_mean - min_mean)
+                else:
+                    normalized_means[obj_id] = 0.5
         
         def variance_to_color(variance_norm):
             """将归一化方差转换为颜色 (方差越大越红)"""
-            # 使用热力图颜色：蓝(低) -> 绿(中) -> 红(高)
             if variance_norm < 0.5:
-                # 蓝到绿
                 r = 0
                 g = int(255 * variance_norm * 2)
                 b = int(255 * (1 - variance_norm * 2))
             else:
-                # 绿到红
                 r = int(255 * (variance_norm - 0.5) * 2)
                 g = int(255 * (1 - (variance_norm - 0.5) * 2))
                 b = 0
             return (r, g, b)
         
-        # 为每个帧生成方差可视化
+        def mean_to_color(mean_norm):
+            """将归一化mean转换为颜色 (mean越大越红)"""
+            if mean_norm < 0.5:
+                r = 0
+                g = int(255 * mean_norm * 2)
+                b = int(255 * (1 - mean_norm * 2))
+            else:
+                r = int(255 * (mean_norm - 0.5) * 2)
+                g = int(255 * (1 - (mean_norm - 0.5) * 2))
+                b = 0
+            return (r, g, b)
+        
+        # ========== 生成全局方差可视化 ==========
         variance_frames = []
         overlay_frames = []
         
         for frame_idx in range(len(self.region_groups)):
-            # 获取原始region groups尺寸用于可视化
-            group_tensor_original = self.region_groups[frame_idx]  # 原始尺寸 [288, 512]
+            group_tensor_original = self.region_groups[frame_idx]
             H, W = group_tensor_original.shape
             variance_vis = np.zeros((H, W, 3), dtype=np.uint8)
             
             unique_objects = torch.unique(group_tensor_original)
-            unique_objects = unique_objects[unique_objects != 0]  # 排除背景
+            unique_objects = unique_objects[unique_objects != 0]
             
             for obj_id in unique_objects:
                 obj_id_val = obj_id.item()
@@ -2016,173 +2951,370 @@ class BasePCOptimizer (nn.Module):
                     color = variance_to_color(var_norm)
                     variance_vis[obj_mask] = color
             
-            # 转换为BGR用于OpenCV
             variance_vis_bgr = cv2.cvtColor(variance_vis, cv2.COLOR_RGB2BGR)
-            
-            # 添加文本信息
-            text_info = f"Frame {frame_idx+1}/{len(self.region_groups)} | Objects: {len(unique_objects)}"
+            text_info = f"Global Variance | Frame {frame_idx+1}/{len(self.region_groups)}"
             cv2.putText(variance_vis_bgr, text_info, (12, 28), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
             
-            # 添加方差信息
-            if frame_idx < 5:  # 只在前几帧显示详细信息避免过于拥挤
-                y_offset = 55
-                for obj_id_val in sorted(list(unique_objects.cpu().numpy()))[:5]:  # 只显示前5个
-                    if obj_id_val in object_variances:
-                        var_text = f"Obj{obj_id_val}: var={object_variances[obj_id_val]:.4f}"
-                        cv2.putText(variance_vis_bgr, var_text, (12, y_offset), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-                        y_offset += 20
-            
-            # 保存单帧
             cv2.imwrite(os.path.join(save_folder, 'frames_variance', f'frame_{frame_idx:04d}.png'), 
-                    variance_vis_bgr)
+                        variance_vis_bgr)
             variance_frames.append(variance_vis_bgr)
             
-            # 创建与原图的overlay
             if hasattr(self, 'imgs') and self.imgs is not None:
                 img_rgb = (self.imgs[frame_idx] * 255).astype(np.uint8)
                 img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-                
-                # 创建overlay
                 overlay = cv2.addWeighted(img_bgr, 0.6, variance_vis_bgr, 0.4, 0)
                 cv2.putText(overlay, text_info, (12, 28), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
                 cv2.imwrite(os.path.join(save_folder, 'frames_overlay', f'frame_{frame_idx:04d}.png'), 
-                        overlay)
+                            overlay)
                 overlay_frames.append(overlay)
         
-        # 生成视频
+        # ========== 生成全局mean可视化 ==========
+        print(f"\nGenerating global mean attention visualizations...")
+        mean_frames = []
+        mean_overlay_frames = []
+        
+        for frame_idx in range(len(self.region_groups)):
+            group_tensor_original = self.region_groups[frame_idx]
+            H, W = group_tensor_original.shape
+            mean_vis = np.zeros((H, W, 3), dtype=np.uint8)
+            
+            unique_objects = torch.unique(group_tensor_original)
+            unique_objects = unique_objects[unique_objects != 0]
+            
+            for obj_id in unique_objects:
+                obj_id_val = obj_id.item()
+                if obj_id_val in normalized_means:
+                    obj_mask = (group_tensor_original == obj_id).cpu().numpy()
+                    mean_norm = normalized_means[obj_id_val]
+                    color = mean_to_color(mean_norm)
+                    mean_vis[obj_mask] = color
+            
+            mean_vis_bgr = cv2.cvtColor(mean_vis, cv2.COLOR_RGB2BGR)
+            text_info = f"Global Mean Attention | Frame {frame_idx+1}/{len(self.region_groups)}"
+            cv2.putText(mean_vis_bgr, text_info, (12, 28), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            
+            cv2.imwrite(os.path.join(save_folder, 'frames_mean', f'frame_{frame_idx:04d}.png'), 
+                        mean_vis_bgr)
+            mean_frames.append(mean_vis_bgr)
+            
+            if hasattr(self, 'imgs') and self.imgs is not None:
+                img_rgb = (self.imgs[frame_idx] * 255).astype(np.uint8)
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                mean_overlay = cv2.addWeighted(img_bgr, 0.6, mean_vis_bgr, 0.4, 0)
+                cv2.putText(mean_overlay, text_info, (12, 28), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.imwrite(os.path.join(save_folder, 'frames_mean_overlay', f'frame_{frame_idx:04d}.png'), 
+                            mean_overlay)
+                mean_overlay_frames.append(mean_overlay)
+        
+        # ========== 生成滑动窗口方差可视化 ==========
+        print(f"\nGenerating sliding window variance visualizations...")
+        
+        window_variance_frames = []
+        window_overlay_frames = []
+        
+        for frame_idx in range(len(self.region_groups)):
+            group_tensor_original = self.region_groups[frame_idx]
+            H, W = group_tensor_original.shape
+            window_var_vis = np.zeros((H, W, 3), dtype=np.uint8)
+            
+            unique_objects = torch.unique(group_tensor_original)
+            unique_objects = unique_objects[unique_objects != 0]
+            
+            for obj_id in unique_objects:
+                obj_id_val = obj_id.item()
+                if obj_id_val in normalized_window_variances:
+                    relevant_windows = [
+                        w for w in normalized_window_variances[obj_id_val]
+                        if w['start_frame'] <= frame_idx <= w['end_frame']
+                    ]
+                    
+                    if relevant_windows:
+                        avg_normalized_var = np.mean([w['normalized_variance'] for w in relevant_windows])
+                        obj_mask = (group_tensor_original == obj_id).cpu().numpy()
+                        color = variance_to_color(avg_normalized_var)
+                        window_var_vis[obj_mask] = color
+            
+            window_var_vis_bgr = cv2.cvtColor(window_var_vis, cv2.COLOR_RGB2BGR)
+            text_info = f"Window Variance (size={window_size}) | Frame {frame_idx+1}/{len(self.region_groups)}"
+            cv2.putText(window_var_vis_bgr, text_info, (12, 28), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            
+            cv2.imwrite(os.path.join(save_folder, 'frames_window_variance', f'frame_{frame_idx:04d}.png'), 
+                        window_var_vis_bgr)
+            window_variance_frames.append(window_var_vis_bgr)
+            
+            if hasattr(self, 'imgs') and self.imgs is not None:
+                img_rgb = (self.imgs[frame_idx] * 255).astype(np.uint8)
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                window_overlay = cv2.addWeighted(img_bgr, 0.6, window_var_vis_bgr, 0.4, 0)
+                cv2.putText(window_overlay, text_info, (12, 28), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.imwrite(os.path.join(save_folder, 'frames_window_overlay', f'frame_{frame_idx:04d}.png'), 
+                            window_overlay)
+                window_overlay_frames.append(window_overlay)
+        
+        # ========== 生成视频 ==========
         if variance_frames:
-            # 方差可视化视频
-            variance_video_path = os.path.join(save_folder, '0_region_variance_heatmap.mp4')
+            variance_video_path = os.path.join(save_folder, '0_global_variance_heatmap.mp4')
             os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_variance/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{variance_video_path}"')
             
-            # Overlay视频
             if overlay_frames:
-                overlay_video_path = os.path.join(save_folder, '0_region_variance_overlay.mp4')
+                overlay_video_path = os.path.join(save_folder, '0_global_variance_overlay.mp4')
                 os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_overlay/frame_%04d.png" '
                         f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                         f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                         f'-movflags +faststart -b:v 5000k "{overlay_video_path}"')
         
-        # 生成方差统计图表
-        if object_variances:
-            plt.figure(figsize=(12, 8))
+        # 新增：生成mean视频
+        if mean_frames:
+            mean_video_path = os.path.join(save_folder, '0_global_mean_heatmap.mp4')
+            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_mean/frame_%04d.png" '
+                    f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
+                    f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
+                    f'-movflags +faststart -b:v 5000k "{mean_video_path}"')
             
-            # 方差柱状图
-            plt.subplot(2, 2, 1)
+            if mean_overlay_frames:
+                mean_overlay_video_path = os.path.join(save_folder, '0_global_mean_overlay.mp4')
+                os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_mean_overlay/frame_%04d.png" '
+                        f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
+                        f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
+                        f'-movflags +faststart -b:v 5000k "{mean_overlay_video_path}"')
+        
+        if window_variance_frames:
+            window_var_video_path = os.path.join(save_folder, '0_window_variance_heatmap.mp4')
+            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_window_variance/frame_%04d.png" '
+                    f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
+                    f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
+                    f'-movflags +faststart -b:v 5000k "{window_var_video_path}"')
+            
+            if window_overlay_frames:
+                window_overlay_video_path = os.path.join(save_folder, '0_window_variance_overlay.mp4')
+                os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_window_overlay/frame_%04d.png" '
+                        f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
+                        f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
+                        f'-movflags +faststart -b:v 5000k "{window_overlay_video_path}"')
+        
+        # ========== 生成统计图表 (使用constrained_layout代替tight_layout) ==========
+        if object_variances:
+            # Use constrained_layout from the start - 扩展为4x2布局以包含mean图表
+            fig = plt.figure(figsize=(16, 16), constrained_layout=True)
+            gs = fig.add_gridspec(4, 2)
+            
+            # 1. 全局方差柱状图
+            ax1 = fig.add_subplot(gs[0, 0])
             obj_ids = list(object_variances.keys())
             variances = list(object_variances.values())
             colors = [variance_to_color(normalized_variances[obj_id]) for obj_id in obj_ids]
             colors_rgb = [(c[0]/255, c[1]/255, c[2]/255) for c in colors]
+            ax1.bar(range(len(obj_ids)), variances, color=colors_rgb)
+            ax1.set_xlabel('Object ID')
+            ax1.set_ylabel('Global Attention Variance')
+            ax1.set_title('Global Variance per Object')
+            ax1.set_xticks(range(len(obj_ids)))
+            ax1.set_xticklabels([f'{i}' for i in obj_ids], rotation=45)
             
-            plt.bar(range(len(obj_ids)), variances, color=colors_rgb)
-            plt.xlabel('Object ID')
-            plt.ylabel('Attention Variance')
-            plt.title('Region Attention Variance per Object')
-            plt.xticks(range(len(obj_ids)), [f'Obj{i}' for i in obj_ids], rotation=45)
+            # 2. 全局mean柱状图（新增）
+            ax2 = fig.add_subplot(gs[0, 1])
+            means = [object_means[obj_id] for obj_id in obj_ids]
+            mean_colors = [mean_to_color(normalized_means[obj_id]) for obj_id in obj_ids]
+            mean_colors_rgb = [(c[0]/255, c[1]/255, c[2]/255) for c in mean_colors]
+            ax2.bar(range(len(obj_ids)), means, color=mean_colors_rgb)
+            ax2.set_xlabel('Object ID')
+            ax2.set_ylabel('Global Mean Attention')
+            ax2.set_title('Global Mean Attention per Object')
+            ax2.set_xticks(range(len(obj_ids)))
+            ax2.set_xticklabels([f'{i}' for i in obj_ids], rotation=45)
             
-            # 方差分布直方图
-            plt.subplot(2, 2, 2)
-            plt.hist(variances, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
-            plt.xlabel('Variance Value')
-            plt.ylabel('Number of Objects')
-            plt.title('Distribution of Attention Variances')
+            # 3. 全局方差分布
+            ax3 = fig.add_subplot(gs[1, 0])
+            ax3.hist(variances, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+            ax3.set_xlabel('Global Variance Value')
+            ax3.set_ylabel('Number of Objects')
+            ax3.set_title('Distribution of Global Variances')
             
-            # 时序变化图（选择方差最大的几个对象）
-            plt.subplot(2, 1, 2)
+            # 4. 全局mean分布（新增）
+            ax4 = fig.add_subplot(gs[1, 1])
+            ax4.hist(means, bins=20, alpha=0.7, color='lightcoral', edgecolor='black')
+            ax4.set_xlabel('Global Mean Attention Value')
+            ax4.set_ylabel('Number of Objects')
+            ax4.set_title('Distribution of Global Mean Attention')
+            
+            # 5. 时序变化图（全局）
+            ax5 = fig.add_subplot(gs[2, 0])
             top_variance_objs = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)[:5]
-            
             for obj_id, var in top_variance_objs:
                 if obj_id in object_attention_values:
                     values = object_attention_values[obj_id]
                     frames = list(range(len(values)))
                     color_rgb = [c/255 for c in variance_to_color(normalized_variances[obj_id])]
-                    plt.plot(frames, values, label=f'Obj{obj_id} (var={var:.4f})', 
+                    ax5.plot(frames, values, label=f'Obj{obj_id} (var={var:.4f})', 
                             color=color_rgb, linewidth=2, marker='o', markersize=3)
+            ax5.set_xlabel('Frame Index')
+            ax5.set_ylabel('Mean Attention Value')
+            ax5.set_title(f'Attention Temporal Changes (Top 5 by Global Variance)')
+            ax5.legend()
+            ax5.grid(True, alpha=0.3)
             
-            plt.xlabel('Frame Index')
-            plt.ylabel('Mean Attention Value')
-            plt.title('Attention Temporal Changes (Top 5 Most Variable Objects)')
-            plt.legend()
-            plt.grid(True, alpha=0.3)
+            # 6. Mean vs Variance散点图（新增）
+            ax6 = fig.add_subplot(gs[2, 1])
+            scatter_means = [object_means[obj_id] for obj_id in obj_ids]
+            scatter_vars = [object_variances[obj_id] for obj_id in obj_ids]
+            ax6.scatter(scatter_means, scatter_vars, alpha=0.6, s=50, c='purple')
+            ax6.set_xlabel('Global Mean Attention')
+            ax6.set_ylabel('Global Variance')
+            ax6.set_title('Mean vs Variance Scatter Plot')
+            ax6.grid(True, alpha=0.3)
             
-            plt.tight_layout()
-            plt.savefig(os.path.join(save_folder, '0_variance_analysis.png'), dpi=300, bbox_inches='tight')
+            # 7. 窗口方差热图（显示top object）
+            ax7 = fig.add_subplot(gs[3, 0])
+            top_objs_for_heatmap = [obj_id for obj_id, _ in top_variance_objs[:10]]
+            
+            if top_objs_for_heatmap and window_variances:
+                max_windows = max(len(window_variances.get(obj_id, [])) for obj_id in top_objs_for_heatmap)
+                heatmap_data = []
+                valid_obj_ids = []
+                
+                for obj_id in top_objs_for_heatmap:
+                    if obj_id in window_variances and len(window_variances[obj_id]) > 0:
+                        window_vars = [w['variance'] for w in window_variances[obj_id]]
+                        padded_vars = window_vars + [np.nan] * (max_windows - len(window_vars))
+                        heatmap_data.append(padded_vars)
+                        valid_obj_ids.append(obj_id)
+                
+                if heatmap_data:
+                    heatmap_array = np.array(heatmap_data)
+                    im = ax7.imshow(heatmap_array, aspect='auto', cmap='RdYlGn_r', interpolation='nearest')
+                    ax7.set_xlabel('Window Index')
+                    ax7.set_ylabel('Object ID')
+                    ax7.set_title(f'Window Variance Heatmap (window_size={window_size})')
+                    ax7.set_yticks(range(len(valid_obj_ids)))
+                    ax7.set_yticklabels([f'Obj{i}' for i in valid_obj_ids])
+                    # Use figure.colorbar instead of plt.colorbar
+                    fig.colorbar(im, ax=ax7, label='Variance')
+                else:
+                    ax7.text(0.5, 0.5, 'No window variance data available', 
+                            ha='center', va='center', transform=ax7.transAxes)
+            else:
+                ax7.text(0.5, 0.5, 'No objects for heatmap', 
+                        ha='center', va='center', transform=ax7.transAxes)
+            
+            # 8. 示例object的窗口方差曲线
+            ax8 = fig.add_subplot(gs[3, 1])
+            plotted_any = False
+            for obj_id, _ in top_variance_objs[:3]:
+                if obj_id in window_variances and len(window_variances[obj_id]) > 0:
+                    window_indices = [w['start_frame'] for w in window_variances[obj_id]]
+                    window_vars = [w['variance'] for w in window_variances[obj_id]]
+                    ax8.plot(window_indices, window_vars, 
+                            label=f'Obj{obj_id}', linewidth=2, marker='o', markersize=4)
+                    plotted_any = True
+            
+            if plotted_any:
+                ax8.set_xlabel('Window Start Frame')
+                ax8.set_ylabel('Window Variance')
+                ax8.set_title(f'Window Variance Over Time (Top 3 Objects)')
+                ax8.legend()
+                ax8.grid(True, alpha=0.3)
+            else:
+                ax8.text(0.5, 0.5, 'No window data available', 
+                        ha='center', va='center', transform=ax8.transAxes)
+            
+            plt.savefig(os.path.join(save_folder, '0_variance_analysis_comprehensive.png'), 
+                        dpi=300, bbox_inches='tight')
             plt.close()
         
-        # 保存数值结果
+        # ========== 保存CSV统计 ==========
+        object_stats = []
+        for obj_id in sorted(object_attention_values.keys()):
+            attention_values = object_attention_values[obj_id]
+            mean_attention = np.mean(attention_values)
+            variance_attention = object_variances.get(obj_id, 0.0)
+            
+            # Calculate average pixel area
+            pixel_areas = []
+            for frame_idx in range(len(self.region_groups)):
+                group_tensor = self.region_groups[frame_idx]
+                obj_mask = (group_tensor == obj_id)
+                pixel_count = obj_mask.sum().item()
+                if pixel_count > 0:
+                    pixel_areas.append(pixel_count)
+            
+            avg_pixel_area = np.mean(pixel_areas) if pixel_areas else 0.0
+            num_frames_present = len(pixel_areas)
+            
+            # Calculate mean window variance
+            mean_window_var = 0.0
+            if obj_id in window_variances and len(window_variances[obj_id]) > 0:
+                mean_window_var = np.mean([w['variance'] for w in window_variances[obj_id]])
+            
+            object_stats.append({
+                'object_id': obj_id,
+                'attention_mean': mean_attention,
+                'global_variance': variance_attention,
+                'mean_window_variance': mean_window_var,
+                'avg_pixel_area': avg_pixel_area,
+                'num_frames_present': num_frames_present,
+                'total_frames': len(self.region_groups)
+            })
+        
+        csv_path = os.path.join(save_folder, 'object_statistics.csv')
+        with open(csv_path, 'w', newline='') as csvfile:
+            fieldnames = ['object_id', 'attention_mean', 'global_variance', 'mean_window_variance',
+                        'avg_pixel_area', 'num_frames_present', 'total_frames']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(object_stats)
+        
+        print(f"\nObject statistics saved to: {csv_path}")
+        
+        # ========== 保存文本结果 ==========
         results_file = os.path.join(save_folder, 'variance_results.txt')
         with open(results_file, 'w') as f:
             f.write("Region Attention Variance Analysis\n")
             f.write("="*50 + "\n\n")
             
             f.write(f"Total objects tracked: {len(object_variances)}\n")
-            f.write(f"Total frames: {len(self.region_groups)}\n\n")
+            f.write(f"Total frames: {len(self.region_groups)}\n")
+            f.write(f"Window size: {window_size}\n\n")
             
-            f.write("Object Variance Rankings (High to Low):\n")
+            f.write("Global Variance Rankings (High to Low):\n")
             sorted_vars = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)
             for rank, (obj_id, var) in enumerate(sorted_vars, 1):
-                f.write(f"{rank:2d}. Object {obj_id:2d}: variance = {var:.6f}\n")
+                mean_win_var = 0.0
+                if obj_id in window_variances and len(window_variances[obj_id]) > 0:
+                    mean_win_var = np.mean([w['variance'] for w in window_variances[obj_id]])
+                f.write(f"{rank:2d}. Object {obj_id:2d}: global_var={var:.6f}, mean_window_var={mean_win_var:.6f}\n")
             
-            f.write(f"\nVariance Statistics:\n")
+            f.write(f"\nGlobal Variance Statistics:\n")
             f.write(f"Mean variance: {np.mean(list(object_variances.values())):.6f}\n")
             f.write(f"Std variance:  {np.std(list(object_variances.values())):.6f}\n")
             f.write(f"Min variance:  {np.min(list(object_variances.values())):.6f}\n")
             f.write(f"Max variance:  {np.max(list(object_variances.values())):.6f}\n")
+            
+            f.write(f"\nGlobal Mean Attention Statistics:\n")
+            f.write(f"Mean of means: {np.mean(list(object_means.values())):.6f}\n")
+            f.write(f"Std of means:  {np.std(list(object_means.values())):.6f}\n")
+            f.write(f"Min mean:      {np.min(list(object_means.values())):.6f}\n")
+            f.write(f"Max mean:      {np.max(list(object_means.values())):.6f}\n")
         
-        print(f"Variance analysis complete!")
+        print(f"\nVariance and Mean analysis complete!")
         print(f"Results saved to: {save_folder}")
-        print(f"Videos: variance heatmap and overlay")
-        print(f"Statistics plot: variance_analysis.png")
-        print(f"Detailed results: variance_results.txt")
-        object_stats = []
-        for obj_id in sorted(object_attention_values.keys()):
-            attention_values = object_attention_values[obj_id]
-            
-            # Calculate mean and variance of attention
-            mean_attention = np.mean(attention_values)
-            variance_attention = object_variances.get(obj_id, 0.0)
-            
-            # Calculate average pixel area across frames where this object appears
-            pixel_areas = []
-            for frame_idx in range(len(self.region_groups)):
-                group_tensor = self.region_groups[frame_idx]
-                obj_mask = (group_tensor == obj_id)
-                pixel_count = obj_mask.sum().item()
-                if pixel_count > 0:  # Only count frames where object exists
-                    pixel_areas.append(pixel_count)
-            
-            avg_pixel_area = np.mean(pixel_areas) if pixel_areas else 0.0
-            num_frames_present = len(pixel_areas)
-            
-            object_stats.append({
-                'object_id': obj_id,
-                'attention_mean': mean_attention,
-                'attention_variance': variance_attention,
-                'avg_pixel_area': avg_pixel_area,
-                'num_frames_present': num_frames_present,
-                'total_frames': len(self.region_groups)
-            })
-
-        # Save to CSV
-        csv_path = os.path.join(save_folder, 'object_statistics.csv')
-        with open(csv_path, 'w', newline='') as csvfile:
-            fieldnames = ['object_id', 'attention_mean', 'attention_variance', 
-                        'avg_pixel_area', 'num_frames_present', 'total_frames']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            
-            writer.writeheader()
-            writer.writerows(object_stats)
-
-        print(f"Object statistics saved to: {csv_path}")
+        print(f"  - Global variance videos and overlays")
+        print(f"  - Global mean attention videos and overlays")
+        print(f"  - Window variance videos and overlays") 
+        print(f"  - Window variance data (NPY)")
+        print(f"  - Global variance and mean data (NPY)")
+        print(f"  - Comprehensive statistics plot (with mean analysis)")
+        print(f"  - CSV and text summaries")
+        
         return object_variances, object_attention_values
-    
 def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-3, temporal_smoothing_weight=0, depth_map_save_dir=None):
     params = [p for p in net.parameters() if p.requires_grad]
     if not params:
@@ -2353,7 +3485,7 @@ def adaptive_multiotsu_variance(img, verbose=False):
     Returns:
         tuple: (best threshold, best number of classes)
     """
-    max_classes = 4
+    max_classes = 3
     best_score = -float('inf')
     best_threshold = None
     best_n_classes = None

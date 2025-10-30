@@ -1,0 +1,35 @@
+Region Attention Variance Analysis
+==================================================
+
+Total objects tracked: 21
+Total frames: 90
+Window size: 5
+
+Global Variance Rankings (High to Low):
+ 1. Object 11: global_var=0.056465, mean_window_var=0.047009
+ 2. Object 18: global_var=0.049996, mean_window_var=0.010405
+ 3. Object 10: global_var=0.048543, mean_window_var=0.009658
+ 4. Object 14: global_var=0.040821, mean_window_var=0.005038
+ 5. Object 12: global_var=0.039054, mean_window_var=0.008561
+ 6. Object 22: global_var=0.038927, mean_window_var=0.012422
+ 7. Object 19: global_var=0.036071, mean_window_var=0.015191
+ 8. Object  2: global_var=0.025248, mean_window_var=0.014429
+ 9. Object  8: global_var=0.023421, mean_window_var=0.019494
+10. Object 16: global_var=0.022538, mean_window_var=0.017998
+11. Object 13: global_var=0.020617, mean_window_var=0.007203
+12. Object 17: global_var=0.018922, mean_window_var=0.006563
+13. Object  3: global_var=0.018197, mean_window_var=0.006805
+14. Object  5: global_var=0.015888, mean_window_var=0.005118
+15. Object 15: global_var=0.012293, mean_window_var=0.003191
+16. Object  6: global_var=0.011675, mean_window_var=0.006176
+17. Object  7: global_var=0.010910, mean_window_var=0.003219
+18. Object  9: global_var=0.009789, mean_window_var=0.003294
+19. Object 21: global_var=0.008702, mean_window_var=0.002673
+20. Object  1: global_var=0.002615, mean_window_var=0.001520
+21. Object 20: global_var=0.000000, mean_window_var=0.000000
+
+Global Variance Statistics:
+Mean variance: 0.024319
+Std variance:  0.015854
+Min variance:  0.000000
+Max variance:  0.056465

@@ -1,0 +1,17 @@
+Region Attention Variance Analysis
+==================================================
+
+Total objects tracked: 3
+Total frames: 80
+Window size: 5
+
+Global Variance Rankings (High to Low):
+ 1. Object  2: global_var=0.111509, mean_window_var=0.073383
+ 2. Object  3: global_var=0.090856, mean_window_var=0.043433
+ 3. Object  1: global_var=0.045864, mean_window_var=0.024333
+
+Global Variance Statistics:
+Mean variance: 0.082743
+Std variance:  0.027407
+Min variance:  0.045864
+Max variance:  0.111509

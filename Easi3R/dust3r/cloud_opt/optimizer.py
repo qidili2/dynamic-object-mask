@@ -14,10 +14,12 @@ from third_party.raft import load_RAFT
 from sam2.build_sam import build_sam2_video_predictor
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+
 sam2_checkpoint = "third_party/sam2/checkpoints/sam2.1_hiera_large.pt"
 model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-
 from skimage.filters import threshold_otsu, threshold_multiotsu
+import os
+import cv2
 
 def smooth_L1_loss_fn(estimate, gt, mask, beta=1.0, per_pixel_thre=50.):
     loss_raw_shape = F.smooth_l1_loss(estimate*mask, gt*mask, beta=beta, reduction='none')
@@ -55,6 +57,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.motion_mask_thre = motion_mask_thre
         self.batchify = batchify
         self.use_atten_mask = use_atten_mask
+        
 
         # adding thing to optimize
         self.im_depthmaps = nn.ParameterList(torch.randn(H, W)/10-3 for H, W in self.imshapes)  # log(depth)
@@ -175,8 +178,165 @@ class PointCloudOptimizer(BasePCOptimizer):
             torch.cuda.empty_cache()
             
         return flow_ij, flow_ji, valid_mask_i, valid_mask_j
-
-
+    @torch.no_grad()
+    def load_textregion_first_frame(self, prefer_npy=True, bin_suffix="_bin"):
+        """
+        加载第一帧的textregion mask，用于过滤在背景区域的objects
+        
+        Returns:
+            torch.Tensor or None: 第一帧的textregion mask (H_img, W_img)，背景=0，前景=1
+        """
+        if not hasattr(self, 'textregion_annotations_dir') or self.textregion_annotations_dir is None:
+            print("[TextRegion Filter] No textregion_annotations_dir provided")
+            return None
+            
+        if not hasattr(self, 'img_pathes') or self.img_pathes is None or len(self.img_pathes) == 0:
+            print("[TextRegion Filter] img_pathes not found")
+            return None
+        
+        # 解析第一帧的路径
+        def _seq_and_stem(img_path: str):
+            parts = img_path.split('/')
+            if 'JPEGImages' in parts:
+                i = parts.index('JPEGImages')
+                if len(parts) <= i + 2:
+                    return None, None
+                seq = parts[i + 2]
+                stem = os.path.splitext(parts[-1])[0]
+                return seq, stem
+            seq = os.path.basename(os.path.dirname(img_path))
+            stem = os.path.splitext(os.path.basename(img_path))[0]
+            return seq, stem
+        
+        img_path = self.img_pathes[0]  # 第一帧
+        seq, stem = _seq_and_stem(img_path)
+        
+        if seq is None or stem is None:
+            print(f"[TextRegion Filter] Cannot parse seq/stem from {img_path}")
+            return None
+        
+        # TextRegion 二值文件路径
+        seq_dir = os.path.join(self.textregion_annotations_dir, seq)
+        npy_path = os.path.join(seq_dir, f"{stem}{bin_suffix}.npy")
+        png_path = os.path.join(seq_dir, f"{stem}{bin_suffix}.png")
+        
+        # 读取二值 mask
+        bin_mask = None
+        if prefer_npy and os.path.exists(npy_path):
+            try:
+                bin_mask = np.load(npy_path).astype(np.uint8)
+                print(f"[TextRegion Filter] Loaded {npy_path}")
+            except Exception as e:
+                print(f"[TextRegion Filter] Failed to load {npy_path}: {e}")
+        
+        if bin_mask is None and os.path.exists(png_path):
+            m = cv2.imread(png_path, cv2.IMREAD_GRAYSCALE)
+            if m is not None:
+                bin_mask = (m > 127).astype(np.uint8)
+                print(f"[TextRegion Filter] Loaded {png_path}")
+        
+        if bin_mask is None and not prefer_npy and os.path.exists(npy_path):
+            try:
+                bin_mask = np.load(npy_path).astype(np.uint8)
+                print(f"[TextRegion Filter] Loaded {npy_path}")
+            except Exception as e:
+                print(f"[TextRegion Filter] Failed to load {npy_path}: {e}")
+        
+        if bin_mask is None:
+            print(f"[TextRegion Filter] Mask not found for {seq}/{stem}")
+            return None
+        
+        # 转换为torch tensor
+        H_img, W_img = self.imshape
+        if bin_mask.shape != (H_img, W_img):
+            bin_mask = cv2.resize(bin_mask, (W_img, H_img), interpolation=cv2.INTER_NEAREST)
+        
+        textregion_mask = torch.from_numpy(bin_mask).bool()
+        print(f"[TextRegion Filter] TextRegion mask loaded: {textregion_mask.sum().item()} foreground pixels")
+        
+        return textregion_mask
+    @torch.no_grad()
+    def filter_objects_by_textregion(self, object_global_attention, groups_hr, attention_threshold):
+        """
+        根据textregion first frame过滤objects:
+        **核心逻辑**: 只过滤那些"高attention但在背景区域"的objects（噪声）
+        保留那些在前景区域的objects，即使attention低
+        
+        Args:
+            object_global_attention: dict, {obj_id: mean_attention}
+            groups_hr: torch.Tensor, [B, H_img, W_img] region groups
+            attention_threshold: float, 用于判断dynamic的阈值
+            
+        Returns:
+            set: 需要过滤掉的object IDs
+        """
+        # 加载第一帧的textregion mask
+        textregion_mask = self.load_textregion_first_frame()
+        
+        if textregion_mask is None:
+            print("[TextRegion Filter] No textregion mask available, skipping filter")
+            return set()
+        
+        device = groups_hr.device
+        textregion_mask = textregion_mask.to(device)
+        
+        # 获取第一帧的region groups
+        first_frame_groups = groups_hr[0]  # [H_img, W_img]
+        
+        # 统计每个object在第一帧中的像素
+        filtered_objects = set()
+        
+        print(f"[TextRegion Filter] Using attention threshold: {attention_threshold:.4f}")
+        
+        for obj_id, global_att in object_global_attention.items():
+            if obj_id == 0:  # 跳过背景
+                continue
+            
+            # 找到该object在第一帧的所有像素
+            obj_mask = (first_frame_groups == obj_id)  # [H_img, W_img]
+            
+            if obj_mask.sum() == 0:
+                # 该object在第一帧不存在，跳过
+                continue
+            
+            # 计算该object在textregion前景区域的像素比例
+            # textregion_mask: 1=前景(objects), 0=背景(黑块)
+            obj_in_foreground = obj_mask & textregion_mask
+            obj_in_background = obj_mask & (~textregion_mask)
+            
+            total_pixels = obj_mask.sum().item()
+            foreground_pixels = obj_in_foreground.sum().item()
+            background_pixels = obj_in_background.sum().item()
+            
+            foreground_ratio = foreground_pixels / total_pixels if total_pixels > 0 else 0
+            background_ratio = 1 - foreground_ratio
+            
+            # **关键修改**: 只过滤那些"高attention + 在背景区域"的objects
+            # 这些才是真正的噪声（比如水面反光、背景纹理等）
+            # 如果object在前景区域（foreground_ratio > 0.1），即使attention低也不过滤
+            should_filter = False
+            reason = ""
+            
+            if background_ratio > 0.9:  # 超过90%在背景区域
+                if global_att > attention_threshold:  # 并且attention高于阈值
+                    should_filter = True
+                    reason = f"HIGH attention ({global_att:.4f}) but in background ({background_ratio*100:.1f}%)"
+            
+            if should_filter:
+                filtered_objects.add(obj_id)
+                print(f"[TextRegion Filter] Object {obj_id} filtered: {reason}")
+            elif foreground_ratio > 0.1:  # 在前景区域的objects，打印信息但不过滤
+                print(f"[TextRegion Filter] Object {obj_id} KEPT: "
+                      f"attention={global_att:.4f}, "
+                      f"in_foreground={foreground_pixels}/{total_pixels} ({foreground_ratio*100:.1f}%)")
+        
+        if len(filtered_objects) > 0:
+            print(f"[TextRegion Filter] Filtered {len(filtered_objects)} objects (high attention + in background)")
+        else:
+            print(f"[TextRegion Filter] No objects filtered")
+        
+        return filtered_objects
+    
     # def get_motion_mask_from_attns(self, ):
     #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     #     self.dynamic_masks = [[] for _ in range(self.n_imgs)]
@@ -199,13 +359,15 @@ class PointCloudOptimizer(BasePCOptimizer):
     #         for i in range(self.n_imgs):
     #             self.dynamic_masks[i] = upsampled_mask[i].to(device)
     #             self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
+    
     @torch.no_grad()
     def get_motion_mask_from_attns(self):
         """
         基于region-level的动态判断：
         1. 计算每个object在所有帧上的mean attention
         2. 用全局阈值判断object是否dynamic
-        3. 将dynamic objects在各帧的region作为mask
+        3. **新增**: 检查textregion first frame，过滤掉在背景区域的objects
+        4. 将dynamic objects在各帧的region作为mask
         """
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
@@ -270,7 +432,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             else:
                 object_global_attention[obj_id] = 0.0
         
-        # Step 4: 使用自适应阈值判断哪些objects是dynamic的
+        # Step 4: 使用自适应阈值计算threshold（提前计算）
         # 将所有object的global attention收集起来
         global_att_values = np.array(list(object_global_attention.values()))
         
@@ -283,13 +445,39 @@ class PointCloudOptimizer(BasePCOptimizer):
         
         # 使用 adaptive_multiotsu_variance 计算阈值
         threshold = adaptive_multiotsu_variance(global_att_values)
-        
         print(f"[Region-level Dynamic Detection] Attention threshold: {threshold:.4f}")
         
-        # Step 5: 确定哪些objects是dynamic的
+        # Step 5: **修改** - 使用textregion过滤，传入threshold
+        # 只过滤那些"高attention但在背景区域"的objects（噪声）
+        textregion_filtered_objects = self.filter_objects_by_textregion(
+            object_global_attention, groups_hr, threshold
+        )
+        
+        # 从object_global_attention中移除被过滤的objects
+        for obj_id in textregion_filtered_objects:
+            if obj_id in object_global_attention:
+                del object_global_attention[obj_id]
+        
+        print(f"[Region-level Dynamic Detection] After textregion filter: {len(object_global_attention)} objects remaining")
+        
+        # Step 6: 重新收集过滤后的attention values并重新计算阈值
+        global_att_values = np.array(list(object_global_attention.values()))
+        
+        if len(global_att_values) == 0:
+            print("[WARNING] No objects remaining after textregion filter, using empty dynamic masks")
+            self.dynamic_masks = [torch.zeros((H_img, W_img), dtype=torch.bool, device=device) 
+                                for _ in range(B)]
+            self.init_dynamic_masks = [m.clone() for m in self.dynamic_masks]
+            return
+        
+        # **关键修改**: 重新计算阈值（基于过滤后的objects）
+        threshold_after_filter = adaptive_multiotsu_variance(global_att_values)
+        print(f"[Region-level Dynamic Detection] Recalculated attention threshold after filtering: {threshold_after_filter:.4f}")
+        
+        # Step 7: 确定哪些objects是dynamic的（使用新的阈值）
         dynamic_object_ids = set()
         for obj_id, global_att in object_global_attention.items():
-            if global_att > threshold:
+            if global_att > threshold_after_filter:
                 dynamic_object_ids.add(obj_id)
         
         print(f"[Region-level Dynamic Detection] {len(dynamic_object_ids)}/{len(all_object_ids)} objects marked as dynamic")
@@ -302,7 +490,7 @@ class PointCloudOptimizer(BasePCOptimizer):
                 status = "DYNAMIC" if obj_id in dynamic_object_ids else "static"
                 print(f"  Object {obj_id}: attention={att:.4f} [{status}]")
         
-        # Step 6: 生成每一帧的dynamic mask（基于高分辨率region_groups）
+        # Step 8: 生成每一帧的dynamic mask（基于高分辨率region_groups）
         self.dynamic_masks = []
         self.init_dynamic_masks = []
         
@@ -322,7 +510,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             self.dynamic_masks.append(dynamic_mask)
             self.init_dynamic_masks.append(dynamic_mask.clone())
         
-        # Step 7: 可视化和统计
+        # Step 9: 可视化和统计
         print(f"[Region-level Dynamic Detection] Dynamic mask statistics:")
         for frame_idx in range(min(5, B)):  # 只打印前5帧
             mask_ratio = self.dynamic_masks[frame_idx].float().mean().item()
@@ -331,6 +519,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # 保存object-level的判断结果，供后续分析使用
         self.dynamic_object_ids = dynamic_object_ids
         self.object_global_attention = object_global_attention
+        self.textregion_filtered_objects = textregion_filtered_objects  # 保存被textregion过滤的objects
 
     def _get_motion_mask_pixelwise(self):
         """

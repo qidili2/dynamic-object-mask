@@ -1,41 +1,18 @@
 Region Attention Variance Analysis
 ==================================================
 
-Total objects tracked: 28
+Total objects tracked: 5
 Total frames: 66
 
 Object Variance Rankings (High to Low):
- 1. Object 20: variance = 0.090914
- 2. Object  4: variance = 0.087053
- 3. Object 14: variance = 0.060628
- 4. Object  9: variance = 0.058226
- 5. Object 25: variance = 0.057484
- 6. Object 16: variance = 0.040330
- 7. Object  8: variance = 0.039318
- 8. Object  5: variance = 0.030630
- 9. Object 19: variance = 0.030141
-10. Object 27: variance = 0.027899
-11. Object  6: variance = 0.022478
-12. Object  2: variance = 0.021769
-13. Object 10: variance = 0.019939
-14. Object  1: variance = 0.018604
-15. Object 28: variance = 0.018039
-16. Object 24: variance = 0.017250
-17. Object 18: variance = 0.016303
-18. Object 23: variance = 0.016067
-19. Object 21: variance = 0.011521
-20. Object 13: variance = 0.007238
-21. Object 11: variance = 0.004938
-22. Object 22: variance = 0.004679
-23. Object 15: variance = 0.004279
-24. Object 12: variance = 0.002414
-25. Object  7: variance = 0.002358
-26. Object 17: variance = 0.002261
-27. Object  3: variance = 0.001506
-28. Object 26: variance = 0.001374
+ 1. Object  4: variance = 0.034364
+ 2. Object  5: variance = 0.029146
+ 3. Object  1: variance = 0.016281
+ 4. Object  2: variance = 0.002572
+ 5. Object  3: variance = 0.001685
 
 Variance Statistics:
-Mean variance: 0.025559
-Std variance:  0.024539
-Min variance:  0.001374
-Max variance:  0.090914
+Mean variance: 0.016810
+Std variance:  0.013357
+Min variance:  0.001685
+Max variance:  0.034364
