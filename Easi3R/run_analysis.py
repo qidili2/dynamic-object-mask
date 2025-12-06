@@ -119,7 +119,7 @@ def main():
     主函数
     """
     # 设置CSV文件路径
-    csv_file = '/mnt/data0/andy/Easi3R/results/davis/easi3r_textregion_simplelabel_refine2/per-sequence_results.csv'  # 请根据实际文件路径修改
+    csv_file = '/mnt/data0/andy/Easi3R/results/davis/easi3r_textregion_finalmovinglabel_refine3/per-sequence_results.csv'  # 请根据实际文件路径修改
     
     try:
         # 执行分析

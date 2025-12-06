@@ -337,29 +337,6 @@ class PointCloudOptimizer(BasePCOptimizer):
         
         return filtered_objects
     
-    # def get_motion_mask_from_attns(self, ):
-    #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    #     self.dynamic_masks = [[] for _ in range(self.n_imgs)]
-    #     self.init_dynamic_masks = [[] for _ in range(self.n_imgs)]
-
-    #     attns = self.get_atts()  # [B,Ht,Wt]，来自 refined_dynamic_map【turn8file15†L64-L66】
-    #     if hasattr(self, "region_groups") and len(self.region_groups) == attns.shape[0]:
-    #         # region-aware 的高分辨率 mask
-    #         hr_masks = self.make_hr_masks_from_regions(attns, use_refined=True, include_background=False, patch=16)
-    #         for i in range(self.n_imgs):
-    #             self.dynamic_masks[i] = hr_masks[i].to(device)         # 这里就是 H_img×W_img 的高分辨率
-    #             self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
-    #     else:
-    #         # 兼容：维持原来的“插值+阈值”方案（低精度）
-    #         upsampled_attns = torch.nn.functional.interpolate(
-    #             attns.unsqueeze(-1).permute(0, 3, 1, 2),
-    #             size=self.imshape, mode='bilinear', align_corners=False
-    #         ).permute(0, 2, 3, 1).squeeze(-1)
-    #         upsampled_mask = (upsampled_attns > adaptive_multiotsu_variance(upsampled_attns.cpu().numpy()))
-    #         for i in range(self.n_imgs):
-    #             self.dynamic_masks[i] = upsampled_mask[i].to(device)
-    #             self.init_dynamic_masks[i] = self.dynamic_masks[i].clone()
-    
     @torch.no_grad()
     def get_motion_mask_from_attns(self):
         """
@@ -446,41 +423,103 @@ class PointCloudOptimizer(BasePCOptimizer):
         # 使用 adaptive_multiotsu_variance 计算阈值
         threshold = adaptive_multiotsu_variance(global_att_values)
         print(f"[Region-level Dynamic Detection] Attention threshold: {threshold:.4f}")
-        
-        # Step 5: **修改** - 使用textregion过滤，传入threshold
-        # 只过滤那些"高attention但在背景区域"的objects（噪声）
-        textregion_filtered_objects = self.filter_objects_by_textregion(
-            object_global_attention, groups_hr, threshold
-        )
-        
-        # 从object_global_attention中移除被过滤的objects
-        for obj_id in textregion_filtered_objects:
-            if obj_id in object_global_attention:
-                del object_global_attention[obj_id]
-        
-        print(f"[Region-level Dynamic Detection] After textregion filter: {len(object_global_attention)} objects remaining")
-        
-        # Step 6: 重新收集过滤后的attention values并重新计算阈值
-        global_att_values = np.array(list(object_global_attention.values()))
-        
-        if len(global_att_values) == 0:
-            print("[WARNING] No objects remaining after textregion filter, using empty dynamic masks")
-            self.dynamic_masks = [torch.zeros((H_img, W_img), dtype=torch.bool, device=device) 
-                                for _ in range(B)]
-            self.init_dynamic_masks = [m.clone() for m in self.dynamic_masks]
-            return
-        
-        # **关键修改**: 重新计算阈值（基于过滤后的objects）
-        threshold_after_filter = adaptive_multiotsu_variance(global_att_values)
-        print(f"[Region-level Dynamic Detection] Recalculated attention threshold after filtering: {threshold_after_filter:.4f}")
-        
-        # Step 7: 确定哪些objects是dynamic的（使用新的阈值）
+        # ================== Step 5–7（替换为以下版本） ==================
+        # 逻辑：若已有 valid 前景（来自 validate_and_adjust_dynamic_map_with_gt），
+        #      则用它作为“前景候选”，并仅将“非前景”的 objects 作为背景候选进行噪声剔除；
+        #      若没有 valid 前景，则不做过滤，直接在全体 objects 上用全局阈值判定。
+
+        # 取缓存的 valid 前景集合（若存在）
+        cached_fg_valid = getattr(self, "tr_fg_valid_objects", set())
+        use_cached_fg = isinstance(cached_fg_valid, set) and len(cached_fg_valid) > 0
+
+        if use_cached_fg:
+            # 只用缓存到的“有效前景”作为最终候选；其他都视作背景候选
+            # 注意：必须和 object_global_attention 的键集合求交，避免越界
+            foreground_object_ids = set(oid for oid in cached_fg_valid if oid in object_global_attention)
+            background_candidates = set(object_global_attention.keys()) - foreground_object_ids
+            print(f"[Region-level Dynamic Detection] Using cached valid-FG: "
+                f"{len(foreground_object_ids)} foreground / {len(background_candidates)} background candidates")
+
+            # —— Step 5：用全局阈值剔除“高 attention 的背景噪声”（只在 background_candidates 上做）
+            noisy_background_objects = {oid for oid in background_candidates
+                                        if object_global_attention.get(oid, 0.0) > threshold}
+            for oid in noisy_background_objects:
+                if oid in object_global_attention:
+                    del object_global_attention[oid]
+            print(f"[Region-level Dynamic Detection] Removed {len(noisy_background_objects)} noisy background objects")
+
+            # —— Step 6：在“剔除噪声后的所有 objects（前景 + 非噪声背景）”上重算阈值
+            # 注意：此处不是只用前景重算阈值，仍是“剩余所有对象”
+            global_att_values = np.array(list(object_global_attention.values()))
+            if len(global_att_values) == 0:
+                print("[WARNING] No objects remaining after background noise removal; using empty dynamic masks")
+                self.dynamic_masks = [torch.zeros((H_img, W_img), dtype=torch.bool, device=device) for _ in range(B)]
+                self.init_dynamic_masks = [m.clone() for m in self.dynamic_masks]
+                return
+            threshold_after_filter = adaptive_multiotsu_variance(global_att_values)
+            print(f"[Region-level Dynamic Detection] Recalculated attention threshold after filtering: "
+                f"{threshold_after_filter:.4f}")
+
+        else:
+            # 没有 valid 前景 → 不做过滤，直接用“全体 objects”与第一次全局阈值
+            foreground_object_ids = set(object_global_attention.keys())
+            noisy_background_objects = set()
+            threshold_after_filter = threshold
+            print("[Region-level Dynamic Detection] No cached valid-FG; "
+                "skipping filtering and using global threshold on all objects")
+
+        # —— Step 7：仅在“前景 objects”中确定哪些是 dynamic（使用 threshold_after_filter）
         dynamic_object_ids = set()
-        for obj_id, global_att in object_global_attention.items():
-            if global_att > threshold_after_filter:
-                dynamic_object_ids.add(obj_id)
-        
-        print(f"[Region-level Dynamic Detection] {len(dynamic_object_ids)}/{len(all_object_ids)} objects marked as dynamic")
+
+        # 保底 1：前景只有一个 object，直接判为 dynamic（不走阈值）
+        if len(foreground_object_ids) == 1:
+            only_oid = next(iter(foreground_object_ids))
+            dynamic_object_ids.add(only_oid)
+            print(f"[Fallback] Only one foreground object ({only_oid}); mark as dynamic without thresholding.")
+        else:
+            # 正常阈值筛选（> 阈值为 dynamic）
+            for oid in foreground_object_ids:
+                if object_global_attention.get(oid, 0.0) > threshold_after_filter:
+                    dynamic_object_ids.add(oid)
+
+            print(f"[Region-level Dynamic Detection] {len(dynamic_object_ids)}/{len(foreground_object_ids)} "
+                f"foreground objects marked as dynamic")
+
+            # 保底 2：若动态面积太小，则在“前景 objects 内”重算一次阈值并重筛
+            MIN_MASK_RATIO = 0.002  # 0.2%，可调
+            if len(dynamic_object_ids) > 0:
+                total_pixels = float(H_img * W_img)
+                ratios = []
+                for t in range(B):
+                    ghr = groups_hr[t]
+                    dyn_pixels_t = 0.0
+                    for oid in dynamic_object_ids:
+                        dyn_pixels_t += (ghr == oid).sum().item()
+                    ratios.append(dyn_pixels_t / (total_pixels + 1e-6))
+                avg_dyn_ratio = float(np.mean(ratios))
+            else:
+                avg_dyn_ratio = 0.0
+
+            if avg_dyn_ratio < MIN_MASK_RATIO:
+                print(f"[Fallback] Dynamic area too small (avg {avg_dyn_ratio*100:.3f}%). "
+                    f"Recomputing threshold WITHIN foreground objects only and re-selecting dynamics.")
+                # 只用前景 objects 的注意力重算阈值
+                fg_att_values = np.array([object_global_attention[oid] for oid in foreground_object_ids],
+                                        dtype=np.float32)
+                if len(fg_att_values) > 0:
+                    threshold_fg_only = adaptive_multiotsu_variance(fg_att_values)
+                else:
+                    threshold_fg_only = threshold_after_filter  # 极端兜底
+                print(f"[Fallback] Foreground-only Otsu threshold: {threshold_fg_only:.4f}")
+
+                dynamic_object_ids = {
+                    oid for oid in foreground_object_ids
+                    if object_global_attention.get(oid, 0.0) > threshold_fg_only
+                }
+                print(f"[Fallback] Foreground-only selection -> {len(dynamic_object_ids)}/{len(foreground_object_ids)} dynamic")
+        # ================== Step 5–7（替换结束） ==================
+
+        print(f"[Region-level Dynamic Detection] {len(dynamic_object_ids)}/{len(foreground_object_ids)} foreground objects marked as dynamic")
         
         # 打印一些统计信息
         if len(object_global_attention) > 0:
@@ -519,7 +558,167 @@ class PointCloudOptimizer(BasePCOptimizer):
         # 保存object-level的判断结果，供后续分析使用
         self.dynamic_object_ids = dynamic_object_ids
         self.object_global_attention = object_global_attention
-        self.textregion_filtered_objects = textregion_filtered_objects  # 保存被textregion过滤的objects
+
+    
+    # @torch.no_grad()
+    # def get_motion_mask_from_attns(self):
+    #     """
+    #     基于region-level的动态判断：
+    #     1. 计算每个object在所有帧上的mean attention
+    #     2. 用全局阈值判断object是否dynamic
+    #     3. **新增**: 检查textregion first frame，过滤掉在背景区域的objects
+    #     4. 将dynamic objects在各帧的region作为mask
+    #     """
+    #     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+    #     # 检查是否有region groups
+    #     if not hasattr(self, "region_groups") or len(self.region_groups) != self.n_imgs:
+    #         print("[WARNING] region_groups not available, falling back to pixel-wise method")
+    #         self._get_motion_mask_pixelwise()
+    #         return
+        
+    #     # 获取attention maps - 确保在正确的设备上
+    #     attns = self.get_atts()  # [B, Ht, Wt]
+    #     if not isinstance(attns, torch.Tensor):
+    #         attns = torch.stack(attns)
+    #     attns = attns.to(device)  # 确保在正确的设备上
+        
+    #     B, Ht, Wt = attns.shape
+    #     H_img, W_img = self.imshape
+        
+    #     print(f"[Region-level Dynamic Detection] Processing {B} frames...")
+        
+    #     # Step 1: 下采样 region_groups 到 token 级别
+    #     # 确保所有region_groups都在同一个设备上
+    #     groups_hr_list = []
+    #     for rg in self.region_groups:
+    #         if isinstance(rg, torch.Tensor):
+    #             groups_hr_list.append(rg.to(device))
+    #         else:
+    #             groups_hr_list.append(torch.tensor(rg, device=device))
+        
+    #     groups_hr = torch.stack(groups_hr_list, dim=0).long()  # [B, H_img, W_img]
+    #     groups_token = self._downsample_groups_to_tokens(groups_hr, H_img, W_img, patch=16)  # [B, Ht, Wt]
+        
+    #     # Step 2: 收集所有object在所有帧的attention值
+    #     # 收集全局所有出现过的object IDs
+    #     all_object_ids = set()
+    #     for frame_idx in range(B):
+    #         unique_ids = torch.unique(groups_token[frame_idx])
+    #         all_object_ids.update(unique_ids[unique_ids != 0].cpu().tolist())
+        
+    #     all_object_ids = sorted(list(all_object_ids))
+    #     print(f"[Region-level Dynamic Detection] Found {len(all_object_ids)} unique objects")
+        
+    #     # Step 3: 对每个object，计算其在所有帧上的mean attention
+    #     object_global_attention = {}  # {obj_id: mean_attention_across_all_frames}
+        
+    #     for obj_id in all_object_ids:
+    #         attention_values = []
+            
+    #         for frame_idx in range(B):
+    #             # 找到该object在当前帧的位置 - 确保设备匹配
+    #             obj_mask_token = (groups_token[frame_idx] == obj_id)  # [Ht, Wt], 已经在device上
+                
+    #             if obj_mask_token.sum() > 0:
+    #                 # 计算该object在当前帧的mean attention
+    #                 # attns[frame_idx]和obj_mask_token都在同一个device上
+    #                 mean_att = attns[frame_idx][obj_mask_token].mean().item()
+    #                 attention_values.append(mean_att)
+            
+    #         # 计算该object在所有出现帧的平均attention
+    #         if len(attention_values) > 0:
+    #             object_global_attention[obj_id] = np.mean(attention_values)
+    #         else:
+    #             object_global_attention[obj_id] = 0.0
+        
+    #     # Step 4: 使用自适应阈值计算threshold（提前计算）
+    #     # 将所有object的global attention收集起来
+    #     global_att_values = np.array(list(object_global_attention.values()))
+        
+    #     if len(global_att_values) == 0:
+    #         print("[WARNING] No objects found, using empty dynamic masks")
+    #         self.dynamic_masks = [torch.zeros((H_img, W_img), dtype=torch.bool, device=device) 
+    #                             for _ in range(B)]
+    #         self.init_dynamic_masks = [m.clone() for m in self.dynamic_masks]
+    #         return
+    #     # Step 4: 计算全局 attention 阈值（只算一次）
+    #     threshold = adaptive_multiotsu_variance(global_att_values)
+    #     print(f"[Region-level Dynamic Detection] Global Otsu threshold for attention: {threshold:.4f}")
+
+    #     # Step 5: 前景筛选逻辑
+    #     # 载入 textregion mask，只为了区分前景/背景（不再过滤高att背景）
+    #     textregion_mask = self.load_textregion_first_frame()
+    #     if textregion_mask is None:
+    #         print("[Region-level Dynamic Detection] No textregion mask found, treating all objects as potential foreground")
+    #         foreground_object_ids = set(object_global_attention.keys())
+    #     else:
+    #         # ★ 关键修复：把 mask 放到和 groups_hr 同一设备，并确保是 bool
+    #         textregion_mask = textregion_mask.to(groups_hr.device, non_blocking=True)
+    #         textregion_mask = textregion_mask.bool()
+
+    #         first_frame_groups = groups_hr[0]  # [H_img, W_img]（已在 device 上）
+    #         foreground_object_ids = set()
+    #         for obj_id in object_global_attention.keys():
+    #             if obj_id == 0:
+    #                 continue
+    #             obj_mask = (first_frame_groups == obj_id)  # bool, device 同 groups_hr
+    #             if obj_mask.any():
+    #                 # 用 logical_and，避免 & 因 dtype/设备导致的问题
+    #                 fg_pixels = torch.logical_and(obj_mask, textregion_mask).float().sum()
+    #                 total_pixels = obj_mask.float().sum()
+    #                 fg_ratio = (fg_pixels / (total_pixels + 1e-6)).item()
+    #                 if fg_ratio > 0.1:
+    #                     foreground_object_ids.add(obj_id)
+
+    #     print(f"[Region-level Dynamic Detection] {len(foreground_object_ids)} foreground objects detected")
+
+    #     # Step 6: 仅在前景objects中判断 dynamic
+    #     dynamic_object_ids = set()
+    #     for obj_id in foreground_object_ids:
+    #         if object_global_attention[obj_id] > threshold:
+    #             dynamic_object_ids.add(obj_id)
+
+    #     print(f"[Region-level Dynamic Detection] {len(dynamic_object_ids)}/{len(foreground_object_ids)} foreground objects marked as dynamic")
+
+        
+    #     # 打印一些统计信息
+    #     if len(object_global_attention) > 0:
+    #         sorted_objs = sorted(object_global_attention.items(), key=lambda x: x[1], reverse=True)
+    #         print(f"[Region-level Dynamic Detection] Top 5 most dynamic objects:")
+    #         for obj_id, att in sorted_objs[:min(5, len(sorted_objs))]:
+    #             status = "DYNAMIC" if obj_id in dynamic_object_ids else "static"
+    #             print(f"  Object {obj_id}: attention={att:.4f} [{status}]")
+        
+    #     # Step 8: 生成每一帧的dynamic mask（基于高分辨率region_groups）
+    #     self.dynamic_masks = []
+    #     self.init_dynamic_masks = []
+        
+    #     for frame_idx in range(B):
+    #         # 在高分辨率上生成mask
+    #         group_hr = groups_hr[frame_idx]  # [H_img, W_img], 已经在device上
+            
+    #         # 初始化mask为False
+    #         dynamic_mask = torch.zeros_like(group_hr, dtype=torch.bool)  # 自动继承device
+            
+    #         # 将所有dynamic objects在该帧的区域标记为True
+    #         for obj_id in dynamic_object_ids:
+    #             # group_hr和obj_id比较，都在同一个device上
+    #             obj_mask_hr = (group_hr == obj_id)
+    #             dynamic_mask |= obj_mask_hr
+            
+    #         self.dynamic_masks.append(dynamic_mask)
+    #         self.init_dynamic_masks.append(dynamic_mask.clone())
+        
+    #     # Step 9: 可视化和统计
+    #     print(f"[Region-level Dynamic Detection] Dynamic mask statistics:")
+    #     for frame_idx in range(min(5, B)):  # 只打印前5帧
+    #         mask_ratio = self.dynamic_masks[frame_idx].float().mean().item()
+    #         print(f"  Frame {frame_idx}: {mask_ratio*100:.2f}% pixels marked as dynamic")
+        
+    #     # 保存object-level的判断结果，供后续分析使用
+    #     self.dynamic_object_ids = dynamic_object_ids
+    #     self.object_global_attention = object_global_attention
 
     def _get_motion_mask_pixelwise(self):
         """

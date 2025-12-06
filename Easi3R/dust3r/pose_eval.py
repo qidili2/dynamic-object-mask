@@ -16,9 +16,23 @@ import dust3r.eval_metadata
 from dust3r.eval_metadata import dataset_metadata
 
 def eval_pose_estimation(args, model, device, save_dir=None):
-    metadata = dataset_metadata.get(args.eval_dataset)
-    img_path = metadata['img_path']
-    mask_path = metadata['mask_path']
+    if args.eval_dataset == 'custom_dir' and args.data_dir is not None:
+        # 自定义数据集直接使用 data_dir 下的子文件夹作为 seq
+        print(f"[EvalPose] Evaluating custom directory: {args.data_dir}")
+        img_path = args.data_dir
+        mask_path = None
+        metadata = {
+            'img_path': img_path,
+            'mask_path': mask_path,
+            'anno_path': None,
+            'full_seq': True,
+            'dir_path_func': lambda root, seq: os.path.join(root, seq),
+            'gt_traj_func': lambda *a, **k: None,  # 无 GT
+        }
+    else:
+        metadata = dataset_metadata.get(args.eval_dataset)
+        img_path = metadata['img_path']
+        mask_path = metadata['mask_path']
 
     ate_mean, rpe_trans_mean, rpe_rot_mean, outfile_list, bug = eval_pose_estimation_dist(
         args, model, device, save_dir=save_dir, img_path=img_path, mask_path=mask_path
@@ -26,18 +40,30 @@ def eval_pose_estimation(args, model, device, save_dir=None):
     return ate_mean, rpe_trans_mean, rpe_rot_mean, outfile_list, bug
 
 def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask_path=None):
-
-    metadata = dataset_metadata.get(args.eval_dataset)
-    anno_path = metadata.get('anno_path', None)
+    if args.eval_dataset == 'custom_dir':
+        md = {
+            'full_seq': True,
+            'seq_list': [],
+            'dir_path_func': lambda root, seq: os.path.join(root, seq),
+            'mask_path_seq_func': lambda mask_root, seq: None,
+            'gt_traj_func': lambda img_root, anno_path, seq: None,  # no GT
+            'traj_format': None,
+            'skip_condition': None,
+            'anno_path': None,
+        }
+    else:
+        md = dataset_metadata.get(args.eval_dataset)
+        if md is None:
+            raise ValueError(f"Unknown eval_dataset: {args.eval_dataset}")
+    anno_path = md.get('anno_path', None)
 
     silent = args.silent
     seq_list = args.seq_list
-    
     if seq_list is None:
-        if metadata.get('full_seq', False):
+        if md.get('full_seq', False):
             args.full_seq = True
         else:
-            seq_list = metadata.get('seq_list', [])
+            seq_list = md.get('seq_list', [])
         if args.full_seq:
             seq_list = os.listdir(img_path)
             seq_list = [seq for seq in seq_list if os.path.isdir(os.path.join(img_path, seq))]
@@ -73,14 +99,14 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
 
     for seq in tqdm(seq_list):
         try:
-            dir_path = metadata['dir_path_func'](img_path, seq)
+            # 2) 每个序列内部路径/掩码/跳过条件
+            dir_path = md['dir_path_func'](img_path, seq)
 
-            # Handle skip_condition
-            skip_condition = metadata.get('skip_condition', None)
+            skip_condition = md.get('skip_condition', None)
             if skip_condition is not None and skip_condition(save_dir, seq):
                 continue
 
-            mask_path_seq_func = metadata.get('mask_path_seq_func', lambda mask_path, seq: None)
+            mask_path_seq_func = md.get('mask_path_seq_func', lambda mask_root, seq: None)
             mask_path_seq = mask_path_seq_func(mask_path, seq)
 
             filelist = [os.path.join(dir_path, name) for name in os.listdir(dir_path)]
@@ -109,35 +135,35 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
 
             with torch.enable_grad():
                 if len(imgs) > 2:
-                    if args.use_atten_mask:
-                        mode = GlobalAlignerMode.PointCloudOptimizer
-                        scene = global_aligner(
-                            output, device=device, mode=mode, verbose=not silent,
-                            shared_focal=not args.not_shared_focal and not args.use_gt_focal,
-                            flow_loss_weight=0.0, flow_loss_fn=args.flow_loss_fn,
-                            depth_regularize_weight=args.depth_regularize_weight,
-                            num_total_iter=args.n_iter, temporal_smoothing_weight=args.temporal_smoothing_weight, motion_mask_thre=args.motion_mask_thre,
-                            flow_loss_start_epoch=args.flow_loss_start_epoch, flow_loss_thre=args.flow_loss_thre, translation_weight=args.translation_weight,
-                            sintel_ckpt=args.eval_dataset == 'sintel', use_self_mask=not args.use_gt_mask, sam2_mask_refine=args.sam2_mask_refine,
-                            empty_cache=len(imgs) >= 80 and len(pairs) > 600, pxl_thre=args.pxl_thresh, # empty cache to make it run on 48GB GPU
-                            use_atten_mask=True,use_region_pooling=args.use_region_pooling, batchify=False, sam2_group_output_dir=f"{save_dir}/{seq}",textregion_annotations_dir=args.textregion_annotations_dir
-                        )
-                        atten_masks = scene.dynamic_masks
-                        del pairs, output, scene
-                        torch.cuda.empty_cache()
-                        print("[DEBUG] Checking imgs structure after first global_aligner:")
-                        for i, img in enumerate(imgs[:3]):
-                            print(f"  img[{i}] keys: {list(img.keys())}")
-                            if 'instance' in img:
-                                print(f"    instance: {img['instance']}")
-                            if 'dynamic_mask' in img:
-                                print(f"    has dynamic_mask: True")
-                        for i, img in enumerate(imgs):
-                                img['atten_mask'] = atten_masks[i].cpu().unsqueeze(0)
-                        pairs = make_pairs(
-                            imgs, scene_graph=scene_graph_type, prefilter=None, symmetrize=True
-                        ) 
-                        output = inference(pairs, model, device, batch_size=1, verbose=not silent)
+                    # if args.use_atten_mask:
+                    #     mode = GlobalAlignerMode.PointCloudOptimizer
+                    #     scene = global_aligner(
+                    #         output, device=device, mode=mode, verbose=not silent,
+                    #         shared_focal=not args.not_shared_focal and not args.use_gt_focal,
+                    #         flow_loss_weight=0.0, flow_loss_fn=args.flow_loss_fn,
+                    #         depth_regularize_weight=args.depth_regularize_weight,
+                    #         num_total_iter=args.n_iter, temporal_smoothing_weight=args.temporal_smoothing_weight, motion_mask_thre=args.motion_mask_thre,
+                    #         flow_loss_start_epoch=args.flow_loss_start_epoch, flow_loss_thre=args.flow_loss_thre, translation_weight=args.translation_weight,
+                    #         sintel_ckpt=args.eval_dataset == 'sintel', use_self_mask=not args.use_gt_mask, sam2_mask_refine=args.sam2_mask_refine,
+                    #         empty_cache=len(imgs) >= 80 and len(pairs) > 600, pxl_thre=args.pxl_thresh, # empty cache to make it run on 48GB GPU
+                    #         use_atten_mask=True,use_region_pooling=args.use_region_pooling, batchify=False, sam2_group_output_dir=f"{save_dir}/{seq}",textregion_annotations_dir=args.textregion_annotations_dir
+                    #     )
+                    #     atten_masks = scene.dynamic_masks
+                    #     del pairs, output, scene
+                    #     torch.cuda.empty_cache()
+                    #     print("[DEBUG] Checking imgs structure after first global_aligner:")
+                    #     for i, img in enumerate(imgs[:3]):
+                    #         print(f"  img[{i}] keys: {list(img.keys())}")
+                    #         if 'instance' in img:
+                    #             print(f"    instance: {img['instance']}")
+                    #         if 'dynamic_mask' in img:
+                    #             print(f"    has dynamic_mask: True")
+                    #     for i, img in enumerate(imgs):
+                    #             img['atten_mask'] = atten_masks[i].cpu().unsqueeze(0)
+                    #     pairs = make_pairs(
+                    #         imgs, scene_graph=scene_graph_type, prefilter=None, symmetrize=True
+                    #     ) 
+                    #     output = inference(pairs, model, device, batch_size=1, verbose=not silent)
 
                     mode = GlobalAlignerMode.PointCloudOptimizer
                     scene = global_aligner(
@@ -149,7 +175,7 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
                         flow_loss_start_epoch=args.flow_loss_start_epoch, flow_loss_thre=args.flow_loss_thre, translation_weight=args.translation_weight,
                         sintel_ckpt=args.eval_dataset == 'sintel', use_self_mask=not args.use_gt_mask, sam2_mask_refine=args.sam2_mask_refine,
                         empty_cache=len(imgs) >= 80 and len(pairs) > 600, pxl_thre=args.pxl_thresh, # empty cache to make it run on 48GB GPU
-                        use_atten_mask=args.use_atten_mask, use_region_pooling=args.use_region_pooling, batchify=not args.not_batchify,textregion_annotations_dir=args.textregion_annotations_dir, #sam2_group_output_dir=f"{save_dir}/{seq}",
+                        use_atten_mask=args.use_atten_mask, use_region_pooling=args.use_region_pooling, batchify=not args.not_batchify,textregion_annotations_dir=args.textregion_annotations_dir, sam2_group_output_dir=f"{save_dir}/{seq}",
                     )
 
                     os.makedirs(f'{save_dir}/{seq}', exist_ok=True)
@@ -200,9 +226,9 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
             scene.save_init_conf_maps(f'{save_dir}/{seq}')
             scene.save_rgb_imgs(f'{save_dir}/{seq}')
             enlarge_seg_masks(f'{save_dir}/{seq}', kernel_size=5 if args.use_gt_mask else 3)
-
-            gt_traj_file = metadata['gt_traj_func'](img_path, anno_path, seq)
-            traj_format = metadata.get('traj_format', None)
+            
+            gt_traj_file = md['gt_traj_func'](img_path, anno_path, seq)
+            traj_format = md.get('traj_format', None)
 
             if args.eval_dataset == 'sintel':
                 gt_traj = load_traj(gt_traj_file=gt_traj_file, stride=args.pose_eval_stride)

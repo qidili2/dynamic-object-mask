@@ -1,0 +1,48 @@
+Region Attention Variance Analysis
+==================================================
+
+Total objects tracked: 28
+Total frames: 63
+Window size: 5
+
+Global Variance Rankings (High to Low):
+ 1. Object 20: global_var=0.078500, mean_window_var=0.039475
+ 2. Object 18: global_var=0.064204, mean_window_var=0.055273
+ 3. Object 10: global_var=0.061442, mean_window_var=0.061838
+ 4. Object 22: global_var=0.058985, mean_window_var=0.053200
+ 5. Object 24: global_var=0.054666, mean_window_var=0.049427
+ 6. Object 13: global_var=0.050857, mean_window_var=0.039318
+ 7. Object  2: global_var=0.046965, mean_window_var=0.006925
+ 8. Object 14: global_var=0.045741, mean_window_var=0.007736
+ 9. Object 16: global_var=0.036422, mean_window_var=0.014286
+10. Object  1: global_var=0.033465, mean_window_var=0.030185
+11. Object 30: global_var=0.032624, mean_window_var=0.018086
+12. Object 12: global_var=0.031067, mean_window_var=0.000000
+13. Object 17: global_var=0.028066, mean_window_var=0.022874
+14. Object 27: global_var=0.024389, mean_window_var=0.018563
+15. Object  8: global_var=0.020991, mean_window_var=0.006892
+16. Object  4: global_var=0.016499, mean_window_var=0.008118
+17. Object 11: global_var=0.016319, mean_window_var=0.003480
+18. Object 26: global_var=0.016302, mean_window_var=0.015106
+19. Object  9: global_var=0.016228, mean_window_var=0.006528
+20. Object 21: global_var=0.014791, mean_window_var=0.018452
+21. Object  7: global_var=0.013466, mean_window_var=0.004911
+22. Object  5: global_var=0.009624, mean_window_var=0.002301
+23. Object 29: global_var=0.008533, mean_window_var=0.002865
+24. Object 19: global_var=0.007415, mean_window_var=0.002801
+25. Object 15: global_var=0.002411, mean_window_var=0.002039
+26. Object 25: global_var=0.001802, mean_window_var=0.000000
+27. Object  6: global_var=0.001550, mean_window_var=0.000664
+28. Object 28: global_var=0.000000, mean_window_var=0.000000
+
+Global Variance Statistics:
+Mean variance: 0.028333
+Std variance:  0.021492
+Min variance:  0.000000
+Max variance:  0.078500
+
+Global Mean Attention Statistics:
+Mean of means: 0.677981
+Std of means:  0.155603
+Min mean:      0.408068
+Max mean:      0.964327

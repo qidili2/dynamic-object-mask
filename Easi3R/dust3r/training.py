@@ -125,8 +125,9 @@ def get_args_parser():
     parser.add_argument('--eval_dataset', type=str, default='sintel', 
                     choices=['davis', 'kitti', 'bonn', 'scannet', 'tum', 'nyu', 'sintel', 'iphone', 'adt', 'drivetrack'], 
                     help='choose dataset for pose evaluation')
-
-    # for monocular depth eval
+    parser.add_argument('--data_dir', default=None, type=str,
+                    help='Path to a custom image directory (e.g., SegTrackv2/JPEGImages) for eval_pose mode.')
+  # for monocular depth eval
     parser.add_argument('--no_crop', action='store_true', default=False, help='do not crop the image for monocular depth evaluation')
 
     # output dir

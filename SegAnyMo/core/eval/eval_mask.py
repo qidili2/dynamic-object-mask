@@ -411,6 +411,14 @@ if __name__ == '__main__':
         gt_dir = os.path.join(eval_dir, seq)
         res_dir = os.path.join(args.res_dir, seq)
         
+        # 1) 目录不存在直接跳过
+        if not os.path.isdir(gt_dir):
+            print(f"[WARN] GT dir not found for seq '{seq}', skip.")
+            continue
+        if not os.path.isdir(res_dir):
+            print(f"[WARN] Pred dir not found for seq '{seq}', skip.")
+            continue
+        
         if "FBMS" in args.eval_dir:
             gt_masks = read_masks_fbms(gt_dir)
             

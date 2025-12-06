@@ -42,6 +42,9 @@ from collections import defaultdict
 import uuid
 import sys, subprocess, tempfile, yaml
 import cv2
+from matplotlib import cm   
+
+inferno_cmap = cm.get_cmap("inferno") 
 
 def c2w_to_tumpose(c2w):
     """
@@ -402,8 +405,8 @@ class BasePCOptimizer (nn.Module):
                                             prefer_npy: bool = True,
                                             bin_suffix: str = "_bin",
                                             min_object_area_ratio: float = 0.01,
-                                            foreground_overlap_threshold: float = 0.8,
-                                            min_frames_ratio: float = 0.8):
+                                            foreground_overlap_threshold: float = 0.6,
+                                            min_frames_ratio: float = 0.6):
         """
         使用GT annotations验证dynamic map的方向性，如果GT objects区域的attention普遍较低，
         则反转dynamic map
@@ -719,6 +722,19 @@ class BasePCOptimizer (nn.Module):
                     obj_type = "BG"
                 
                 print(f"  Object {obj_id} ({obj_type}): mean_att={mean_att:.4f} (from {len(obj_att_values)} pixels across frames)")
+        self.tr_fg_objects_all = set(foreground_objects)
+        self.tr_bg_objects_all = set(background_objects)
+        self.tr_fg_valid_objects = set(valid_foreground_objects)
+        self.tr_fg_small_filtered = set(filtered_small_objects)
+        self.tr_fg_short_filtered = set(filtered_short_duration_objects)
+        print(f"[TR Validation] Cached foreground IDs for Step 7: {len(self.tr_fg_valid_objects)} valid / {len(self.tr_fg_objects_all)} total FG")
+
+        if len(valid_foreground_objects) == 0:
+            print("[TR Validation] WARNING: No valid foreground objects after filtering small/short ones!")
+            print(f"[TR Validation] Try lowering min_object_area_ratio (current: {min_object_area_ratio}) or min_frames_ratio (current: {min_frames_ratio})")
+            # 仍然缓存空的有效前景集合，避免外部访问属性时报错
+            self.dynamic_map_was_inverted = False
+            return False
         
         # Step 4: 找到前景objects中attention最高的
         # **修改**: 只考虑valid_foreground_objects（已过滤小objects）
@@ -775,7 +791,16 @@ class BasePCOptimizer (nn.Module):
             print(f"    -> From {len(background_attentions)} background objects")
         else:
             print(f"    -> From background pixels (no background objects)")
+            
+        all_att_values = list(foreground_attentions.values()) + list(background_attentions.values())
+        if len(all_att_values) > 0:
+            threshold = adaptive_multiotsu_variance(np.array(all_att_values))
+        else:
+            threshold = 0.5  # fallback
+
+        print(f"[TR Validation] Global Otsu threshold for attention = {threshold:.4f}")
         
+        # should_invert = max_fg_attention < mean_bg_attention or threshold < mean_bg_attention
         should_invert = max_fg_attention < mean_bg_attention
         
         if should_invert:
@@ -1151,32 +1176,134 @@ class BasePCOptimizer (nn.Module):
             img = img[..., ::-1]
             cv2.imwrite(f'{path}/frame_{i:04d}.png', img*255)
         return imgs
-
+    
     def save_dynamic_masks(self, path):
-        dynamic_masks = self.dynamic_masks if getattr(self, 'sam2_dynamic_masks', None) is None else self.sam2_dynamic_masks
-        for i, dynamic_mask in enumerate(dynamic_masks):
-            cv2.imwrite(f'{path}/dynamic_mask_{i}.png', (dynamic_mask * 255).detach().cpu().numpy().astype(np.uint8))
+        """
+        保留：
+        - dynamic_mask_{i}.png（二值 0/255）
+        - 0_dynamic_masks.mp4（二值视频）
+        - return: dynamic_masks（或 sam2_dynamic_masks）
 
-        # save video - use ffmpeg instead of OpenCV
+        新增：
+        - {i:05d}_dynamic_color.png（同一帧所有“动态 object”的彩色合成）
+        - 1_dynamic_objects_color.mp4（彩色视频）
+
+        注意：统一确保写帧是 uint8 3通道，避免 OpenCV depth 错误。
+        """
+
+        os.makedirs(path, exist_ok=True)
+
+        # —— 一定先定义，避免异常后 NameError ——
+        dynamic_masks = getattr(self, 'sam2_dynamic_masks', None)
+        if dynamic_masks is None:
+            dynamic_masks = getattr(self, 'dynamic_masks', None)
+        if dynamic_masks is None or len(dynamic_masks) == 0:
+            raise RuntimeError("save_dynamic_masks: dynamic masks not ready. "
+                            "Call get_motion_mask_from_attns()/get_motion_mask_from_pairs() first.")
+
+        # 辅助：把任意张量/数组 -> numpy
+        def to_numpy_uint8(x):
+            if hasattr(x, "detach"):
+                x = x.detach().cpu().numpy()
+            else:
+                x = np.array(x)
+            return x
+
+        # --- 帧目录 ---
+        frames_dir_bin = os.path.join(path, 'frames_dynamic_masks')
+        frames_dir_color = os.path.join(path, 'frames_dynamic_objects_color')
+        os.makedirs(frames_dir_bin, exist_ok=True)
+        os.makedirs(frames_dir_color, exist_ok=True)
+
+        # --- 彩色调色板（id->BGR） ---
+        def id_to_color(oid: int) -> tuple:
+            if oid <= 0:
+                return (0, 0, 0)
+            H = (oid * 37) % 180  # HSV 色相
+            S, V = 200, 255
+            hsv = np.uint8([[[H, S, V]]])
+            bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0].tolist()
+            return (int(bgr[0]), int(bgr[1]), int(bgr[2]))
+
+        have_fg = hasattr(self, 'region_groups') and hasattr(self, 'dynamic_object_ids')
+        dyn_ids = set(int(x) for x in getattr(self, 'dynamic_object_ids', []) if int(x) > 0)
+
+        # ===== 逐帧输出 =====
+        for i, dm in enumerate(dynamic_masks):
+            dm_np = to_numpy_uint8(dm)
+
+            # —— 二值图：strict uint8 单通道，然后堆成 3 通道写帧 ——
+            bin_mask = ((dm_np > 0).astype(np.uint8)) * 255  # (H,W) uint8 in {0,255}
+            cv2.imwrite(os.path.join(path, f'dynamic_mask_{i}.png'), bin_mask)
+            bin_bgr = np.dstack([bin_mask, bin_mask, bin_mask])  # 直接堆，不用 cvtColor，避免类型坑
+            cv2.imwrite(os.path.join(frames_dir_bin, f'frame_{i:04d}.png'), bin_bgr)
+
+            # —— 彩色 object 合成图 —— 
+            if have_fg:
+                # region_groups: 所有 SAM2 object 的 id（0=背景）
+                rg = to_numpy_uint8(self.region_groups[i]).astype(np.uint8)
+
+                # 1) 从 dynamic_object_ids 取出本序列的“动态 object id”
+                dyn_ids = getattr(self, "dynamic_object_ids", [])
+                dyn_ids = [int(x) for x in dyn_ids if int(x) > 0 and int(x) < 256]
+
+                if len(dyn_ids) == 0:
+                    # 没有任何动态 object，就全背景
+                    out_id = np.zeros_like(rg, dtype=np.uint8)
+                else:
+                    # 2) 给这些动态 id 重新编号成 1..K（避免 id 特别大，便于 eval）
+                    dyn_ids_sorted = sorted(set(dyn_ids))
+                    id_remap = {oid: (k + 1) for k, oid in enumerate(dyn_ids_sorted)}
+                    # out_id 只包含动态 objects，其它全是 0
+                    out_id = np.zeros_like(rg, dtype=np.uint8)
+                    for oid, new_id in id_remap.items():
+                        out_id[rg == oid] = new_id
+
+                # === 这里写出的灰度 PNG 就是 “只含动态 object 的 label mask” ===
+                cv2.imwrite(os.path.join(path, f'{i:05d}.png'), out_id)
+
+                # 3) 可视化用的彩色图，同样只画动态 objects
+                H, W = out_id.shape
+                color_img = np.zeros((H, W, 3), dtype=np.uint8)
+                unique_ids = np.unique(out_id)
+                for uid in unique_ids:
+                    uid = int(uid)
+                    if uid == 0:
+                        continue
+                    color_img[out_id == uid] = id_to_color(uid)
+
+            else:
+                # 没有 region_groups/dynamic_object_ids 时的降级可视化
+                H, W = bin_mask.shape
+                color_img = np.zeros((H, W, 3), dtype=np.uint8)
+                color_img[bin_mask > 0] = (0, 255, 255)
+
+            # 确保 uint8 3通道
+            color_img = color_img.astype(np.uint8)
+            cv2.imwrite(os.path.join(path, f'dynamic_mask_color_{i}.png'), color_img)
+            cv2.imwrite(os.path.join(frames_dir_color, f'frame_{i:04d}.png'), color_img)
+
+        # ===== 生成视频（ffmpeg） =====
         if len(dynamic_masks) > 0:
-            h, w = dynamic_masks[0].shape
-            # save all frames first
-            frames_dir = os.path.join(path, 'frames_dynamic_masks')
-            os.makedirs(frames_dir, exist_ok=True)
-            for i, mask in enumerate(dynamic_masks):
-                frame = (mask * 255).detach().cpu().numpy().astype(np.uint8)
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-                cv2.imwrite(f'{frames_dir}/frame_{i:04d}.png', frame)
-            
-            # use ffmpeg to generate video, frame rate set to 24
-            video_output_path = os.path.join(path, '0_dynamic_masks.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_dir}/frame_%04d.png" '
-                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
-                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
-                     f'-movflags +faststart -b:v 5000k "{video_output_path}"')
+            video_output_path_bin = os.path.join(path, '0_dynamic_masks.mp4')
+            os.system(
+                f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_dir_bin}/frame_%04d.png" '
+                f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
+                f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
+                f'-movflags +faststart -b:v 5000k "{video_output_path_bin}"'
+            )
 
+            video_output_path_color = os.path.join(path, '1_dynamic_objects_color.mp4')
+            os.system(
+                f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_dir_color}/frame_%04d.png" '
+                f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
+                f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
+                f'-movflags +faststart -b:v 5000k "{video_output_path_color}"'
+            )
+
+        # 返回原 dynamic masks
         return dynamic_masks
-
+    
     def save_init_fused_dynamic_masks(self, path):
         # save init_dynamic_masks video
         if len(self.init_dynamic_masks) > 0:
@@ -1709,10 +1836,10 @@ class BasePCOptimizer (nn.Module):
         self, 
         img_rgb, 
         min_size=500, 
-        grid=32,
+        grid=16,
         fill_background=True,      # 新增：是否用小mask填补背景
         small_min_size=100,        # 新增：小mask的最小面积
-        small_grid=64              # 新增：用于生成小mask的更密集grid
+        small_grid=32              # 新增：用于生成小mask的更密集grid
     ):
         """
         基于 LangSplat 完整逻辑：
@@ -2355,349 +2482,7 @@ class BasePCOptimizer (nn.Module):
         print(f"[SAM→SAM2] Using direct SAM masks as initial regions (no point conversion)")
         
         return region_groups
-    
-    
 
-    # @torch.no_grad()
-    # def compute_region_attention_variance_and_visualize(self, save_folder='demo_tmp/region_variance_vis', window_size=5):
-    #     """
-    #     计算每个region object在所有帧上mean pool后的attention方差，
-    #     并生成基于方差的可视化（方差越大越红）
-    #     """
-    #     if not hasattr(self, 'video_segments') or not hasattr(self, 'region_groups'):
-    #         print("Error: video_segments or region_groups not found. Please run region tracking first.")
-    #         return None, None
-        
-    #     # Debug: Check what attention-related attributes exist
-    #     attention_attrs = []
-    #     for attr in ['dynamic_map', 'refined_dynamic_map', 'cross_att_k_i_mean_fused', 'cross_att_k_i_var_fused']:
-    #         if hasattr(self, attr):
-    #             val = getattr(self, attr)
-    #             if val is not None:
-    #                 attention_attrs.append(f"{attr}: {type(val)} shape={getattr(val, 'shape', 'N/A')}")
-    #             else:
-    #                 attention_attrs.append(f"{attr}: None")
-    #         else:
-    #             attention_attrs.append(f"{attr}: not found")
-        
-    #     print("Available attention attributes:")
-    #     for attr_info in attention_attrs:
-    #         print(f"  - {attr_info}")
-        
-    #     # Use dynamic_map directly for variance analysis
-    #     if hasattr(self, 'dynamic_map') and self.dynamic_map is not None:
-    #         attention_source = self.dynamic_map
-    #         print(f"Using dynamic_map with shape: {self.dynamic_map.shape}")
-    #     else:
-    #         print("Error: dynamic_map not found. Please ensure use_atten_mask=True when initializing.")
-    #         return None, None
-        
-    #     os.makedirs(save_folder, exist_ok=True)
-    #     os.makedirs(os.path.join(save_folder, 'frames_variance'), exist_ok=True)
-    #     os.makedirs(os.path.join(save_folder, 'frames_overlay'), exist_ok=True)
-        
-    #     # 收集所有object的所有帧的mean pooled attention值
-    #     object_attention_values = defaultdict(list)  # {obj_id: [mean_att_frame1, mean_att_frame2, ...]}
-    #     frame_object_means = []  # [{obj_id: mean_value}, ...]  # 每帧每个object的均值
-        
-    #     print(f"Computing mean pooled attention for {len(self.region_groups)} frames...")
-        
-    #     # 获取attention map和region groups的尺寸
-    #     attention_H, attention_W = attention_source.shape[1], attention_source.shape[2]  # 例如 [18, 32]
-    #     print(f"Attention map size: {attention_H} x {attention_W}")
-    #     if len(self.region_groups) > 0:
-    #         region_H, region_W = self.region_groups[0].shape  # 例如 [288, 512] 
-    #         print(f"Region groups size: {region_H} x {region_W}")
-        
-    #     for frame_idx in range(len(self.region_groups)):
-    #         frame_means = {}
-    #         group_tensor = self.region_groups[frame_idx]  # [H,W] with object IDs
-    #         attention_map = attention_source[frame_idx]  # [H,W] attention values - 使用dynamic_map
-            
-    #         # 确保两个tensor在同一个设备上
-    #         if group_tensor.device != attention_map.device:
-    #             attention_map = attention_map.to(group_tensor.device)
-            
-    #         # 如果尺寸不匹配，需要将region_groups下采样到attention_map的尺寸
-    #         if group_tensor.shape != attention_map.shape:
-    #             # 使用最近邻插值将region groups下采样
-    #             group_tensor_resized = torch.nn.functional.interpolate(
-    #                 group_tensor.float().unsqueeze(0).unsqueeze(0),  # [1, 1, H, W]
-    #                 size=(attention_H, attention_W),
-    #                 mode='nearest'
-    #             ).squeeze(0).squeeze(0).long()  # [attention_H, attention_W]
-    #         else:
-    #             group_tensor_resized = group_tensor
-            
-    #         # 获取当前帧的所有唯一object IDs
-    #         unique_objects = torch.unique(group_tensor_resized)
-    #         unique_objects = unique_objects[unique_objects != 0]  # 排除背景
-            
-    #         for obj_id in unique_objects:
-    #             obj_mask = (group_tensor_resized == obj_id)
-    #             if obj_mask.sum() > 0:  # 确保region不为空
-    #                 # 计算该region的mean pooled attention
-    #                 mean_attention = attention_map[obj_mask].mean().item()
-    #                 object_attention_values[obj_id.item()].append(mean_attention)
-    #                 frame_means[obj_id.item()] = mean_attention
-            
-    #         frame_object_means.append(frame_means)
-        
-    #     # 计算每个object在所有帧上的attention方差
-    #     object_variances = {}
-    #     for obj_id, attention_values in object_attention_values.items():
-    #         if len(attention_values) >= 2:  # 至少需要2个值才能计算方差
-    #             variance = np.var(attention_values)
-    #             object_variances[obj_id] = variance
-    #         else:
-    #             object_variances[obj_id] = 0.0
-        
-    #     print(f"Computed variance for {len(object_variances)} objects")
-        
-    #     # 归一化方差到[0,1]范围用于颜色映射 - 最高方差设为1.0
-    #     if object_variances:
-    #         # Set alpha parameter (e.g., 0.1 means use 90th percentile as max)
-    #         alpha = 0.3  # You can adjust this value
-            
-    #         variances_array = np.array(list(object_variances.values()))
-            
-    #         # Calculate the (1-alpha) percentile
-    #         percentile_value = np.percentile(variances_array, (1 - alpha) * 100)
-            
-    #         # Calculate max_value using the formula: percentile_value * (1-alpha) / alpha
-    #         if alpha > 0:
-    #             max_value = percentile_value * (1 - alpha) / alpha
-    #         else:
-    #             max_value = variances_array.max()
-            
-    #         print(f"Variance normalization: alpha = {alpha}")
-    #         print(f"  {(1-alpha)*100:.0f}th percentile = {percentile_value:.6f}")
-    #         print(f"  calculated max_value = {max_value:.6f}")
-    #         print(f"  actual max variance = {variances_array.max():.6f}")
-            
-    #         normalized_variances = {}
-    #         for obj_id, var in object_variances.items():
-    #             if max_value > 1e-8:  # é¿å…é™¤é›¶
-    #                 # Normalize using the calculated max_value, clip to [0, 1]
-    #                 normalized_variances[obj_id] = min(var / max_value, 1.0)
-    #             else:
-    #                 normalized_variances[obj_id] = 0.0
-            
-    #         # Print objects with normalized variance >= 1.0 (those above the threshold)
-    #         high_variance_objs = [obj_id for obj_id, norm_var in normalized_variances.items() if norm_var >= 1.0]
-    #         print(f"Objects with variance >= max_value (normalized to 1.0): {len(high_variance_objs)}")
-            
-    #         # Show top variance objects
-    #         sorted_vars = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)
-    #         print(f"Top objects by variance:")
-    #         for obj_id, var in sorted_vars[:5]:
-    #             norm_var = normalized_variances[obj_id]
-    #             print(f"  Object {obj_id}: variance = {var:.6f} (normalized = {norm_var:.3f})")
-    #     else:
-    #         normalized_variances = {}
-        
-    #     def variance_to_color(variance_norm):
-    #         """将归一化方差转换为颜色 (方差越大越红)"""
-    #         # 使用热力图颜色：蓝(低) -> 绿(中) -> 红(高)
-    #         if variance_norm < 0.5:
-    #             # 蓝到绿
-    #             r = 0
-    #             g = int(255 * variance_norm * 2)
-    #             b = int(255 * (1 - variance_norm * 2))
-    #         else:
-    #             # 绿到红
-    #             r = int(255 * (variance_norm - 0.5) * 2)
-    #             g = int(255 * (1 - (variance_norm - 0.5) * 2))
-    #             b = 0
-    #         return (r, g, b)
-        
-    #     # 为每个帧生成方差可视化
-    #     variance_frames = []
-    #     overlay_frames = []
-        
-    #     for frame_idx in range(len(self.region_groups)):
-    #         # 获取原始region groups尺寸用于可视化
-    #         group_tensor_original = self.region_groups[frame_idx]  # 原始尺寸 [288, 512]
-    #         H, W = group_tensor_original.shape
-    #         variance_vis = np.zeros((H, W, 3), dtype=np.uint8)
-            
-    #         unique_objects = torch.unique(group_tensor_original)
-    #         unique_objects = unique_objects[unique_objects != 0]  # 排除背景
-            
-    #         for obj_id in unique_objects:
-    #             obj_id_val = obj_id.item()
-    #             if obj_id_val in normalized_variances:
-    #                 obj_mask = (group_tensor_original == obj_id).cpu().numpy()
-    #                 var_norm = normalized_variances[obj_id_val]
-    #                 color = variance_to_color(var_norm)
-    #                 variance_vis[obj_mask] = color
-            
-    #         # 转换为BGR用于OpenCV
-    #         variance_vis_bgr = cv2.cvtColor(variance_vis, cv2.COLOR_RGB2BGR)
-            
-    #         # 添加文本信息
-    #         text_info = f"Frame {frame_idx+1}/{len(self.region_groups)} | Objects: {len(unique_objects)}"
-    #         cv2.putText(variance_vis_bgr, text_info, (12, 28), 
-    #                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-            
-    #         # 添加方差信息
-    #         if frame_idx < 5:  # 只在前几帧显示详细信息避免过于拥挤
-    #             y_offset = 55
-    #             for obj_id_val in sorted(list(unique_objects.cpu().numpy()))[:5]:  # 只显示前5个
-    #                 if obj_id_val in object_variances:
-    #                     var_text = f"Obj{obj_id_val}: var={object_variances[obj_id_val]:.4f}"
-    #                     cv2.putText(variance_vis_bgr, var_text, (12, y_offset), 
-    #                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-    #                     y_offset += 20
-            
-    #         # 保存单帧
-    #         cv2.imwrite(os.path.join(save_folder, 'frames_variance', f'frame_{frame_idx:04d}.png'), 
-    #                 variance_vis_bgr)
-    #         variance_frames.append(variance_vis_bgr)
-            
-    #         # 创建与原图的overlay
-    #         if hasattr(self, 'imgs') and self.imgs is not None:
-    #             img_rgb = (self.imgs[frame_idx] * 255).astype(np.uint8)
-    #             img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-                
-    #             # 创建overlay
-    #             overlay = cv2.addWeighted(img_bgr, 0.6, variance_vis_bgr, 0.4, 0)
-    #             cv2.putText(overlay, text_info, (12, 28), 
-    #                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-                
-    #             cv2.imwrite(os.path.join(save_folder, 'frames_overlay', f'frame_{frame_idx:04d}.png'), 
-    #                     overlay)
-    #             overlay_frames.append(overlay)
-        
-    #     # 生成视频
-    #     if variance_frames:
-    #         # 方差可视化视频
-    #         variance_video_path = os.path.join(save_folder, '0_region_variance_heatmap.mp4')
-    #         os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_variance/frame_%04d.png" '
-    #                 f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
-    #                 f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
-    #                 f'-movflags +faststart -b:v 5000k "{variance_video_path}"')
-            
-    #         # Overlay视频
-    #         if overlay_frames:
-    #             overlay_video_path = os.path.join(save_folder, '0_region_variance_overlay.mp4')
-    #             os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_overlay/frame_%04d.png" '
-    #                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
-    #                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
-    #                     f'-movflags +faststart -b:v 5000k "{overlay_video_path}"')
-        
-    #     # 生成方差统计图表
-    #     if object_variances:
-    #         plt.figure(figsize=(12, 8))
-            
-    #         # 方差柱状图
-    #         plt.subplot(2, 2, 1)
-    #         obj_ids = list(object_variances.keys())
-    #         variances = list(object_variances.values())
-    #         colors = [variance_to_color(normalized_variances[obj_id]) for obj_id in obj_ids]
-    #         colors_rgb = [(c[0]/255, c[1]/255, c[2]/255) for c in colors]
-            
-    #         plt.bar(range(len(obj_ids)), variances, color=colors_rgb)
-    #         plt.xlabel('Object ID')
-    #         plt.ylabel('Attention Variance')
-    #         plt.title('Region Attention Variance per Object')
-    #         plt.xticks(range(len(obj_ids)), [f'Obj{i}' for i in obj_ids], rotation=45)
-            
-    #         # 方差分布直方图
-    #         plt.subplot(2, 2, 2)
-    #         plt.hist(variances, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
-    #         plt.xlabel('Variance Value')
-    #         plt.ylabel('Number of Objects')
-    #         plt.title('Distribution of Attention Variances')
-            
-    #         # 时序变化图（选择方差最大的几个对象）
-    #         plt.subplot(2, 1, 2)
-    #         top_variance_objs = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)[:5]
-            
-    #         for obj_id, var in top_variance_objs:
-    #             if obj_id in object_attention_values:
-    #                 values = object_attention_values[obj_id]
-    #                 frames = list(range(len(values)))
-    #                 color_rgb = [c/255 for c in variance_to_color(normalized_variances[obj_id])]
-    #                 plt.plot(frames, values, label=f'Obj{obj_id} (var={var:.4f})', 
-    #                         color=color_rgb, linewidth=2, marker='o', markersize=3)
-            
-    #         plt.xlabel('Frame Index')
-    #         plt.ylabel('Mean Attention Value')
-    #         plt.title('Attention Temporal Changes (Top 5 Most Variable Objects)')
-    #         plt.legend()
-    #         plt.grid(True, alpha=0.3)
-            
-    #         plt.tight_layout()
-    #         plt.savefig(os.path.join(save_folder, '0_variance_analysis.png'), dpi=300, bbox_inches='tight')
-    #         plt.close()
-        
-    #     # 保存数值结果
-    #     results_file = os.path.join(save_folder, 'variance_results.txt')
-    #     with open(results_file, 'w') as f:
-    #         f.write("Region Attention Variance Analysis\n")
-    #         f.write("="*50 + "\n\n")
-            
-    #         f.write(f"Total objects tracked: {len(object_variances)}\n")
-    #         f.write(f"Total frames: {len(self.region_groups)}\n\n")
-            
-    #         f.write("Object Variance Rankings (High to Low):\n")
-    #         sorted_vars = sorted(object_variances.items(), key=lambda x: x[1], reverse=True)
-    #         for rank, (obj_id, var) in enumerate(sorted_vars, 1):
-    #             f.write(f"{rank:2d}. Object {obj_id:2d}: variance = {var:.6f}\n")
-            
-    #         f.write(f"\nVariance Statistics:\n")
-    #         f.write(f"Mean variance: {np.mean(list(object_variances.values())):.6f}\n")
-    #         f.write(f"Std variance:  {np.std(list(object_variances.values())):.6f}\n")
-    #         f.write(f"Min variance:  {np.min(list(object_variances.values())):.6f}\n")
-    #         f.write(f"Max variance:  {np.max(list(object_variances.values())):.6f}\n")
-        
-    #     print(f"Variance analysis complete!")
-    #     print(f"Results saved to: {save_folder}")
-    #     print(f"Videos: variance heatmap and overlay")
-    #     print(f"Statistics plot: variance_analysis.png")
-    #     print(f"Detailed results: variance_results.txt")
-    #     object_stats = []
-    #     for obj_id in sorted(object_attention_values.keys()):
-    #         attention_values = object_attention_values[obj_id]
-            
-    #         # Calculate mean and variance of attention
-    #         mean_attention = np.mean(attention_values)
-    #         variance_attention = object_variances.get(obj_id, 0.0)
-            
-    #         # Calculate average pixel area across frames where this object appears
-    #         pixel_areas = []
-    #         for frame_idx in range(len(self.region_groups)):
-    #             group_tensor = self.region_groups[frame_idx]
-    #             obj_mask = (group_tensor == obj_id)
-    #             pixel_count = obj_mask.sum().item()
-    #             if pixel_count > 0:  # Only count frames where object exists
-    #                 pixel_areas.append(pixel_count)
-            
-    #         avg_pixel_area = np.mean(pixel_areas) if pixel_areas else 0.0
-    #         num_frames_present = len(pixel_areas)
-            
-    #         object_stats.append({
-    #             'object_id': obj_id,
-    #             'attention_mean': mean_attention,
-    #             'attention_variance': variance_attention,
-    #             'avg_pixel_area': avg_pixel_area,
-    #             'num_frames_present': num_frames_present,
-    #             'total_frames': len(self.region_groups)
-    #         })
-
-    #     # Save to CSV
-    #     csv_path = os.path.join(save_folder, 'object_statistics.csv')
-    #     with open(csv_path, 'w', newline='') as csvfile:
-    #         fieldnames = ['object_id', 'attention_mean', 'attention_variance', 
-    #                     'avg_pixel_area', 'num_frames_present', 'total_frames']
-    #         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            
-    #         writer.writeheader()
-    #         writer.writerows(object_stats)
-
-    #     print(f"Object statistics saved to: {csv_path}")
-    #     return object_variances, object_attention_values
     @torch.no_grad()
     def compute_region_attention_variance_and_visualize(self, save_folder='demo_tmp/region_variance_vis', window_size=5):
         """
@@ -2908,28 +2693,17 @@ class BasePCOptimizer (nn.Module):
                     normalized_means[obj_id] = 0.5
         
         def variance_to_color(variance_norm):
-            """将归一化方差转换为颜色 (方差越大越红)"""
-            if variance_norm < 0.5:
-                r = 0
-                g = int(255 * variance_norm * 2)
-                b = int(255 * (1 - variance_norm * 2))
-            else:
-                r = int(255 * (variance_norm - 0.5) * 2)
-                g = int(255 * (1 - (variance_norm - 0.5) * 2))
-                b = 0
-            return (r, g, b)
-        
+            """将归一化方差映射到 inferno colormap 颜色"""
+            # 保证在 [0,1] 范围内
+            x = float(np.clip(variance_norm, 0.0, 1.0))
+            r, g, b, _ = inferno_cmap(x)   # 0-1 浮点
+            return (int(r * 255), int(g * 255), int(b * 255))
+
         def mean_to_color(mean_norm):
-            """将归一化mean转换为颜色 (mean越大越红)"""
-            if mean_norm < 0.5:
-                r = 0
-                g = int(255 * mean_norm * 2)
-                b = int(255 * (1 - mean_norm * 2))
-            else:
-                r = int(255 * (mean_norm - 0.5) * 2)
-                g = int(255 * (1 - (mean_norm - 0.5) * 2))
-                b = 0
-            return (r, g, b)
+            """将归一化 mean 映射到 inferno colormap 颜色"""
+            x = float(np.clip(mean_norm, 0.0, 1.0))
+            r, g, b, _ = inferno_cmap(x)
+            return (int(r * 255), int(g * 255), int(b * 255))
         
         # ========== 生成全局方差可视化 ==========
         variance_frames = []
@@ -3475,41 +3249,102 @@ def cluster_attention_maps(feature, dynamic_map, n_clusters=64):
 
     return normalized_map, cluster_labels
 
-def adaptive_multiotsu_variance(img, verbose=False):
-    """adaptive multi-threshold Otsu algorithm based on inter-class variance maximization
-    
-    Args:
-        img: input image array
-        verbose: whether to print detailed information
-        
-    Returns:
-        tuple: (best threshold, best number of classes)
+def adaptive_multiotsu_variance(img, verbose=False, max_classes=3):
     """
-    max_classes = 3
-    best_score = -float('inf')
+    自适应 multi-Otsu（按类间方差/√K 最大化）：
+      - 如果输入长度 < 4，则将 max_classes 设为 len(img)
+      - 清理 NaN/Inf
+      - 唯一值过少/常量数组/阈值失败提供稳健兜底
+
+    Returns
+    -------
+    float : 选定的阈值（使用最后一个切分阈值）
+    """
+    # ---- 预处理 ----
+    arr = np.asarray(img, dtype=np.float64).ravel()
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        if verbose: print("[AMOV] Empty/invalid input -> return 0.5")
+        return 0.5
+
+    n = arr.size
+    # 按要求：长度 < 4 时，max_classes = len(img)
+    if n < max_classes:
+        max_classes = max(2, int(n))  # 至少 2 类，避免无效
+
+    # 唯一值检查
+    uniques = np.unique(arr)
+    u = uniques.size
+    if u == 1:
+        if verbose: print(f"[AMOV] Constant array (value={uniques[0]:.6f}) -> return that value")
+        return float(uniques[0])
+
+    # classes 上界不能超过唯一值数量
+    max_classes_eff = int(max(2, min(max_classes, u)))
+    best_score = -np.inf
     best_threshold = None
     best_n_classes = None
     scores = {}
-    
-    for n_classes in range(2, max_classes + 1):
-        thresholds = threshold_multiotsu(img, classes=n_classes)
-        
-        regions = np.digitize(img, bins=thresholds)
-        var_between = np.var([img[regions == i].mean() for i in range(n_classes)])
-        
+
+    # ---- 逐 K 计算 ----
+    for n_classes in range(2, max_classes_eff + 1):
+        try:
+            thresholds = threshold_multiotsu(arr, classes=n_classes)
+        except Exception as e:
+            if verbose: print(f"[AMOV] threshold_multiotsu failed for K={n_classes}: {e}")
+            continue
+
+        if thresholds is None or len(thresholds) != (n_classes - 1):
+            if verbose: print(f"[AMOV] Invalid thresholds for K={n_classes}: {thresholds}")
+            continue
+
+        # 数值稳定：保证严格递增
+        if not np.all(np.diff(thresholds) > 0):
+            if verbose: print(f"[AMOV] Non-increasing thresholds for K={n_classes}: {thresholds}")
+            continue
+
+        # 分桶
+        regions = np.digitize(arr, bins=thresholds, right=False)  # 0..(K-1)
+
+        # 若某个 class 为空，跳过（skimage 理论上可避免，但保险）
+        means = []
+        empty_class = False
+        for i in range(n_classes):
+            cls_vals = arr[regions == i]
+            if cls_vals.size == 0:
+                empty_class = True
+                break
+            means.append(cls_vals.mean())
+
+        if empty_class:
+            if verbose: print(f"[AMOV] Empty class for K={n_classes}, skip")
+            continue
+
+        means = np.array(means, dtype=np.float64)
+
+        # 评分：类间均值的方差 / sqrt(K)
+        # （保持你原公式，但可换更标准的“类间方差（加权）”；此处按你原式）
+        var_between = np.var(means)
         score = var_between / np.sqrt(n_classes)
+
         scores[n_classes] = score
-        
         if score > best_score:
             best_score = score
-            best_threshold = thresholds[-1]
+            best_threshold = float(thresholds[-1])  # 取最后一个阈值
             best_n_classes = n_classes
-    
+
+    # ---- 兜底 ----
+    if best_threshold is None:
+        # multi-otsu 全部失败时：用中位数兜底（比均值更稳）
+        fallback = float(np.median(arr))
+        if verbose: print(f"[AMOV] All K failed -> fallback median={fallback:.6f}")
+        return fallback
+
     if verbose:
-        print("number of classes score:")
-        for n_classes, score in scores.items():
-            print(f"number of classes {n_classes}: score {score:.4f}" + 
-                  (" (best)" if n_classes == best_n_classes else ""))
-        print(f"final selected number of classes: {best_n_classes}")
-    
+        print("[AMOV] number of classes score:")
+        for k in sorted(scores.keys()):
+            tag = " (best)" if k == best_n_classes else ""
+            print(f"  K={k}: score={scores[k]:.6f}{tag}")
+        print(f"[AMOV] selected K={best_n_classes}, threshold={best_threshold:.6f}")
+
     return best_threshold

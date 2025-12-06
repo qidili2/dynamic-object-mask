@@ -30,7 +30,13 @@ if __name__ == '__main__':
 
         try:
             if args.mode == 'eval_pose':
-                ate_mean, rpe_trans_mean, rpe_rot_mean, outfile_list, bug = eval_pose_estimation(args, model, device, save_dir=args.output_dir)
+                if args.data_dir is not None:
+                    print(f"[EvalPose] Using custom data directory: {args.data_dir}")
+                    args.eval_dataset = 'custom_dir'
+                    args.custom_data_dir = args.data_dir  # 备用传递
+                ate_mean, rpe_trans_mean, rpe_rot_mean, outfile_list, bug = eval_pose_estimation(
+                    args, model, device, save_dir=args.output_dir
+                )
                 print(f'ATE mean: {ate_mean}, RPE trans mean: {rpe_trans_mean}, RPE rot mean: {rpe_rot_mean}')
             if args.mode == 'eval_depth':
                 eval_mono_depth_estimation(args, model, device)
