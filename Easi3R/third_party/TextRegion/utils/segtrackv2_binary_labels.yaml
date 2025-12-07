@@ -1,0 +1,38 @@
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/bird_of_paradise/bird_of_paradise_00000.png:
+  label: &id001
+  - human
+  - animal
+  - vehicle
+  - ground
+  - road
+  - grass
+  - water
+  - tree
+  - cloud
+  - sky
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/birdfall/birdfall2_00018.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/bmx/bmx_06668.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/cheetah/chasedeer_frame_0001.bmp:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/drift/drift_05960.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/frog/0000000001.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/girl/5117-8_70161.bmp:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/hummingbird/hummingbird_00564.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/monkey/0000000001.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/monkeydog/Comp_195.bmp:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/parachute/parachute_00000.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/penguin/penguin_00000.bmp:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/soldier/soldier_001.png:
+  label: *id001
+/mnt/data0/andy/Easi3R/SegTrackv2/JPEGImages/worm/0000000001.png:
+  label: *id001

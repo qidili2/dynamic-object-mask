@@ -1,0 +1,295 @@
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/arabian_horn_viper/00000.jpg:
+  label: &id001
+  - moving object
+  - human
+  - animal
+  - vehicle
+  - sport
+  - ground
+  - grass
+  - water
+  - tree
+  - cloud
+  - sky
+  - window
+  - wall
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/arctic_fox/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/arctic_fox_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/arctic_fox_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/arctic_fox_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/arctic_wolf_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/arctic_wolf_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/bear/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/black_cat_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/black_cat_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/chameleon/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/copperhead_snake/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/crab/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/crab_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/crab_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/cuttlefish_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/cuttlefish_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/cuttlefish_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/cuttlefish_4/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/cuttlefish_5/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/dead_leaf_butterfly_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/desert_fox/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/devil_scorpionfish/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/devil_scorpionfish_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/devil_scorpionfish_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/eastern_screech_owl_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/eastern_screech_owl_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/egyptian_nightjar/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/elephant/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flatfish_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flatfish_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flatfish_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flatfish_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flatfish_4/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_4/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_5/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_6/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_7/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_8/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flounder_9/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flower_crab_spider_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flower_crab_spider_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/flower_crab_spider_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/fossa/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/goat_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/goat_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/goat_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/grasshopper_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/grasshopper_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/grasshopper_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/groundhog/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/hedgehog_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/hedgehog_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/hedgehog_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/hedgehog_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/hermit_crab/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/horned_owl/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/hyena/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/ibex/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/jerboa/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/jerboa_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/leaf_katydid/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/leaf_tail_gecko/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/lichen_katydid/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/lion_cub_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/lion_cub_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/lion_cub_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/lion_cub_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/lioness/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/marine_iguana/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/markhor/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/meerkat/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/mongoose/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/moth/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/mountain_goat/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/nile_monitor_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/nile_monitor_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/octopus/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/octopus_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/orchid_mantis/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/pallas_cat/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/peacock_flounder_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/peacock_flounder_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/peacock_flounder_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/plaice/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/polar_bear_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/polar_bear_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/polar_bear_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/polar_bear_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/polar_bear_cub/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/potoo/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/pygmy_seahorse_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/pygmy_seahorse_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/pygmy_seahorse_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/pygmy_seahorse_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/pygmy_seahorse_4/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/rabbit/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/rodent_x/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/rusty_spotted_cat_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/rusty_spotted_cat_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/sand_cat_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/scorpionfish_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/scorpionfish_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/scorpionfish_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/scorpionfish_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/scorpionfish_4/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/scorpionfish_5/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/seal/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/seal_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/seal_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/seal_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/shrimp/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/smallfish/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_10/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_4/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_5/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_6/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_7/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snow_leopard_8/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snowshoe_hare/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snowy_owl_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snowy_owl_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/snowy_owl_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/sole/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/spider_tailed_horned_viper_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/spider_tailed_horned_viper_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/spider_tailed_horned_viper_2/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/spider_tailed_horned_viper_3/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/starfish/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/stick_insect_0/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/stick_insect_1/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/turtle/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/white_tailed_ptarmigan/00000.jpg:
+  label: *id001
+/mnt/data0/andy/SegAnyMo/MoCA/JPEGImages/wolf/00000.jpg:
+  label: *id001

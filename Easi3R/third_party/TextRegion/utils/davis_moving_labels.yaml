@@ -1,0 +1,194 @@
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/bear/00000.jpg:
+  label: &id001
+  - moving object
+  - human
+  - animal
+  - vehicle
+  - sport
+  - ground
+  - road
+  - grass
+  - water
+  - tree
+  - cloud
+  - sky
+  - window
+  - wall
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/bike-packing/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/blackswan/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/bmx-bumps/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/bmx-trees/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/boat/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/boxing-fisheye/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/breakdance/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/breakdance-flare/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/bus/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/camel/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/car-roundabout/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/car-shadow/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/car-turn/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/cat-girl/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/classic-car/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/color-run/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/cows/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/crossing/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dance-jump/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dance-twirl/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dancing/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/disc-jockey/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dog/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dog-agility/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dog-gooses/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dogs-jump/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/dogs-scale/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/drift-chicane/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/drift-straight/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/drift-turn/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/drone/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/elephant/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/flamingo/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/goat/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/gold-fish/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/hike/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/hockey/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/horsejump-high/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/horsejump-low/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/india/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/judo/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/kid-football/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/kite-surf/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/kite-walk/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/koala/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/lab-coat/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/lady-running/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/libby/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/lindy-hop/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/loading/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/longboard/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/lucia/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/mallard-fly/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/mallard-water/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/mbike-trick/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/miami-surf/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/motocross-bumps/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/motocross-jump/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/motorbike/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/night-race/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/paragliding/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/paragliding-launch/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/parkour/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/pigs/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/planes-water/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/rallye/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/rhino/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/rollerblade/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/schoolgirls/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/scooter-black/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/scooter-board/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/scooter-gray/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/sheep/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/shooting/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/skate-park/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/snowboard/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/soapbox/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/soccerball/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/stroller/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/stunt/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/surf/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/swing/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/tennis/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/tractor-sand/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/train/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/tuk-tuk/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/upside-down/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/varanus-cage/00000.jpg:
+  label: *id001
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/walking/00000.jpg:
+  label: *id001

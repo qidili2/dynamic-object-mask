@@ -53,7 +53,6 @@ data/
 datasets/
 *.csv
 *.tsv
-*.yaml
 *.yml
 *.xml
 *.parquet

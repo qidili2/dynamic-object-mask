@@ -1,0 +1,24 @@
+/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/blackswan/00000.jpg:
+  label:
+  - background
+  - sky
+  - water
+  - road
+  - wall
+  - floor
+  - ground
+  - grass
+  - tree
+  - mountain
+  - building
+  - ceiling
+  - sea
+  - sand
+  - snow
+  - bridge
+  - sidewalk
+  - field
+  - rock
+  - river
+  - lake
+  - foreground
