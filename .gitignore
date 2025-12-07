@@ -50,7 +50,6 @@ env/
 # Data & Checkpoints
 # =============================
 data/
-datasets/
 *.csv
 *.tsv
 *.yml

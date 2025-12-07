@@ -106,8 +106,11 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
             if skip_condition is not None and skip_condition(save_dir, seq):
                 continue
 
-            mask_path_seq_func = md.get('mask_path_seq_func', lambda mask_root, seq: None)
-            mask_path_seq = mask_path_seq_func(mask_path, seq)
+            mask_path_seq_func = md.get('mask_path_seq_func', None)
+            if mask_path is not None and mask_path_seq_func is not None:
+                mask_path_seq = mask_path_seq_func(mask_path, seq)
+            else:
+                mask_path_seq = None
 
             filelist = [os.path.join(dir_path, name) for name in os.listdir(dir_path)]
             filelist.sort()

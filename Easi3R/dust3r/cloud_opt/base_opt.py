@@ -236,11 +236,13 @@ class BasePCOptimizer (nn.Module):
             self.dynamic_map = (dynamic_map - dynamic_map_min) / (dynamic_map_max - dynamic_map_min + 1e-6)
 
             
-            if os.path.exists(textregion_annotations_dir):
+            if textregion_annotations_dir is None:
+                print("[TR Validation] No textregion_annotations_dir provided, skip TextRegion validation")
+            elif os.path.exists(textregion_annotations_dir):
                 self.validate_and_adjust_dynamic_map_with_gt(textregion_annotations_dir)
             else:
                 print(f"[TR Validation] GT directory not found: {textregion_annotations_dir}")
-                
+                            
             try:
                 print("Starting variance analysis...")
                 variances, attention_values = self.compute_region_attention_variance_and_visualize(
