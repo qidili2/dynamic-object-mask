@@ -1,0 +1,19 @@
+Executable      = run_textregion.sh
+
+Request_CPUs    = 4
+Request_Memory  = 32000        
+Request_Disk    = 20000000    
+Request_GPUs    = 1          
+Requirements = (Machine == "vision-c21.cs.illinois.edu") || \
+               (Machine == "vision-c22.cs.illinois.edu") || \
+               (Machine == "vision-c23.cs.illinois.edu")
+               
+Log             = logs/textregion.log
+Output          = logs/textregion.out
+Error           = logs/textregion.err
+
+stream_output = True
+stream_error  = True
+
+Queue 1
+ 

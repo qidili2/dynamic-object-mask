@@ -446,19 +446,23 @@ class BasePCOptimizer (nn.Module):
             return False
 
         def _seq_and_stem(img_path: str):
-            # 解析 sequence 名与帧名（不含扩展名）
             parts = img_path.split('/')
             if 'JPEGImages' in parts:
                 i = parts.index('JPEGImages')
+                # 兼容：.../JPEGImages/480p/seq/00000.jpg  和  .../JPEGImages/seq/00000.jpg
                 if len(parts) <= i + 2:
                     return None, None
-                seq = parts[i + 2]                           # e.g. "kite-surf"
-                stem = os.path.splitext(parts[-1])[0]        # e.g. "00000"
+                mid = parts[i + 1]
+                if mid in ('480p', 'Full-Resolution', '1080p', '720p'):
+                    seq = parts[i + 2]
+                else:
+                    seq = parts[i + 1]
+                stem = os.path.splitext(parts[-1])[0]
                 return seq, stem
-            # 兜底（路径不含 JPEGImages）
             seq = os.path.basename(os.path.dirname(img_path))
             stem = os.path.splitext(os.path.basename(img_path))[0]
             return seq, stem
+
 
         # Step 1: 读取第一帧的textregion mask，用于判断哪些objects属于前景
         frame_idx = 0
@@ -1289,7 +1293,7 @@ class BasePCOptimizer (nn.Module):
         if len(dynamic_masks) > 0:
             video_output_path_bin = os.path.join(path, '0_dynamic_masks.mp4')
             os.system(
-                f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_dir_bin}/frame_%04d.png" '
+                f'ffmpeg -y -framerate 24 -i "{frames_dir_bin}/frame_%04d.png" '
                 f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                 f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                 f'-movflags +faststart -b:v 5000k "{video_output_path_bin}"'
@@ -1297,7 +1301,7 @@ class BasePCOptimizer (nn.Module):
 
             video_output_path_color = os.path.join(path, '1_dynamic_objects_color.mp4')
             os.system(
-                f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_dir_color}/frame_%04d.png" '
+                f'ffmpeg -y -framerate 24 -i "{frames_dir_color}/frame_%04d.png" '
                 f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                 f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                 f'-movflags +faststart -b:v 5000k "{video_output_path_color}"'
@@ -1320,7 +1324,7 @@ class BasePCOptimizer (nn.Module):
             
             # use ffmpeg to generate video, frame rate set to 24
             video_output_path = os.path.join(path, '0_init_dynamic_masks.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_dir}/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{frames_dir}/frame_%04d.png" '
                      f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                      f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                      f'-movflags +faststart -b:v 5000k "{video_output_path}"')
@@ -1338,7 +1342,7 @@ class BasePCOptimizer (nn.Module):
             
             # use ffmpeg to generate video, frame rate set to 24
             video_output_path = os.path.join(path, '0_fused_dynamic_masks.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_dir}/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{frames_dir}/frame_%04d.png" '
                      f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                      f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                      f'-movflags +faststart -b:v 5000k "{video_output_path}"')
@@ -1812,7 +1816,7 @@ class BasePCOptimizer (nn.Module):
             
             # use ffmpeg to generate video, frame rate set to 24
             video_att_path = os.path.join(fused_save_folder, f'0_{save_name}_att_video.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_att_dir}/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{frames_att_dir}/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{video_att_path}"')
@@ -1829,7 +1833,7 @@ class BasePCOptimizer (nn.Module):
             
             # use ffmpeg to generate video, frame rate set to 24
             video_mask_path = os.path.join(fused_save_folder, f'0_{save_name}_mask_video.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{frames_mask_dir}/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{frames_mask_dir}/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{video_mask_path}"')
@@ -2463,14 +2467,14 @@ class BasePCOptimizer (nn.Module):
             
             # 生成groups视频
             groups_video_path = os.path.join(vis_dir, "0_sam_to_sam2_groups.mp4")
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{os.path.join(vis_dir, "groups")}/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{os.path.join(vis_dir, "groups")}/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{groups_video_path}"')
             
             # 生成overlay视频  
             overlay_video_path = os.path.join(vis_dir, "0_sam_to_sam2_overlays.mp4")
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{os.path.join(vis_dir, "overlays")}/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{os.path.join(vis_dir, "overlays")}/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{overlay_video_path}"')
@@ -2836,14 +2840,14 @@ class BasePCOptimizer (nn.Module):
         # ========== 生成视频 ==========
         if variance_frames:
             variance_video_path = os.path.join(save_folder, '0_global_variance_heatmap.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_variance/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{save_folder}/frames_variance/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{variance_video_path}"')
             
             if overlay_frames:
                 overlay_video_path = os.path.join(save_folder, '0_global_variance_overlay.mp4')
-                os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_overlay/frame_%04d.png" '
+                os.system(f'ffmpeg -y -framerate 24 -i "{save_folder}/frames_overlay/frame_%04d.png" '
                         f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                         f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                         f'-movflags +faststart -b:v 5000k "{overlay_video_path}"')
@@ -2851,28 +2855,28 @@ class BasePCOptimizer (nn.Module):
         # 新增：生成mean视频
         if mean_frames:
             mean_video_path = os.path.join(save_folder, '0_global_mean_heatmap.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_mean/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{save_folder}/frames_mean/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{mean_video_path}"')
             
             if mean_overlay_frames:
                 mean_overlay_video_path = os.path.join(save_folder, '0_global_mean_overlay.mp4')
-                os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_mean_overlay/frame_%04d.png" '
+                os.system(f'ffmpeg -y -framerate 24 -i "{save_folder}/frames_mean_overlay/frame_%04d.png" '
                         f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                         f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                         f'-movflags +faststart -b:v 5000k "{mean_overlay_video_path}"')
         
         if window_variance_frames:
             window_var_video_path = os.path.join(save_folder, '0_window_variance_heatmap.mp4')
-            os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_window_variance/frame_%04d.png" '
+            os.system(f'ffmpeg -y -framerate 24 -i "{save_folder}/frames_window_variance/frame_%04d.png" '
                     f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                     f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                     f'-movflags +faststart -b:v 5000k "{window_var_video_path}"')
             
             if window_overlay_frames:
                 window_overlay_video_path = os.path.join(save_folder, '0_window_variance_overlay.mp4')
-                os.system(f'/usr/bin/ffmpeg -y -framerate 24 -i "{save_folder}/frames_window_overlay/frame_%04d.png" '
+                os.system(f'ffmpeg -y -framerate 24 -i "{save_folder}/frames_window_overlay/frame_%04d.png" '
                         f'-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
                         f'-vcodec h264 -preset fast -profile:v baseline -pix_fmt yuv420p '
                         f'-movflags +faststart -b:v 5000k "{window_overlay_video_path}"')

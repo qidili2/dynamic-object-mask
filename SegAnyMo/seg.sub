@@ -1,0 +1,19 @@
+Executable      = run_seg.sh
+
+Request_CPUs    = 8
+Request_Memory  = 64000     
+Request_Disk    = 200000000    
+Request_GPUs    = 1          
+Requirements = (Machine == "vision-c21.cs.illinois.edu") || \
+               (Machine == "vision-c22.cs.illinois.edu") || \
+               (Machine == "vision-c23.cs.illinois.edu")
+               
+Log             = logs/seg.log
+Output          = logs/seg.out
+Error           = logs/seg.err
+
+stream_output = True
+stream_error  = True
+
+Queue 1
+ 

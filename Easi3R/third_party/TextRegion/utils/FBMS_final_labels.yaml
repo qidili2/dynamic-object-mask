@@ -1,0 +1,73 @@
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/camel01/00000.png:
+  label: &id001
+  - moving object
+  - human
+  - animal
+  - vehicle
+  - sport
+  - ground
+  - grass
+  - water
+  - tree
+  - cloud
+  - sky
+  - window
+  - wall
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/cars1/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/cars10/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/cars4/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/cars5/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/cats01/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/cats03/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/cats06/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/dogs01/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/dogs02/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/farm01/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/giraffes01/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/goats01/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/horses02/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/horses04/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/horses05/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/lion01/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/marple12/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/marple2/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/marple4/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/marple6/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/marple7/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/marple9/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/people03/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/people1/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/people2/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/rabbits02/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/rabbits03/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/rabbits04/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/FBMS_59/tennis/00000.png:
+  label: *id001

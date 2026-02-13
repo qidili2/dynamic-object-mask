@@ -1,0 +1,41 @@
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/bird_of_paradise/00000.png:
+  label: &id001
+  - moving object
+  - human
+  - animal
+  - vehicle
+  - sport
+  - ground
+  - grass
+  - water
+  - tree
+  - cloud
+  - sky
+  - window
+  - wall
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/birdfall/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/bmx/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/cheetah/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/drift/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/frog/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/girl/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/hummingbird/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/monkey/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/monkeydog/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/parachute/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/penguin/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/soldier/00000.png:
+  label: *id001
+/home/qidili2/dynamic-object-mask/Easi3R/SegTrackv2/JPEGImages/worm/00000.png:
+  label: *id001

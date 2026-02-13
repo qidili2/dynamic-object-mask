@@ -1,0 +1,8 @@
+
+
+Request_CPUs    = 4
+Request_Memory  = 120000     
+Request_Disk    = 20000000    
+Request_GPUs    = 0        
+Requirements = (Machine == "vision-c21.cs.illinois.edu")
+Queue 

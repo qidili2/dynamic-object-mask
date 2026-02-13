@@ -423,7 +423,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # 使用 adaptive_multiotsu_variance 计算阈值
         threshold = adaptive_multiotsu_variance(global_att_values)
         print(f"[Region-level Dynamic Detection] Attention threshold: {threshold:.4f}")
-        # ================== Step 5–7（替换为以下版本） ==================
+        # ================== Step5-7 ==================
         # 逻辑：若已有 valid 前景（来自 validate_and_adjust_dynamic_map_with_gt），
         #      则用它作为“前景候选”，并仅将“非前景”的 objects 作为背景候选进行噪声剔除；
         #      若没有 valid 前景，则不做过滤，直接在全体 objects 上用全局阈值判定。
@@ -879,6 +879,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             with torch.autocast(device_type=device, dtype=autocast_dtype):
                 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
                 frame_tensors = torch.from_numpy(np.array((self.imgs))).permute(0, 3, 1, 2).to(device)
+                # frame_tensors = torch.from_numpy(np.array(self.imgs)).permute(0, 3, 1, 2).contiguous()  # keep on CPU
                 inference_state = predictor.init_state(video_path=frame_tensors)
                 mask_list = [self.dynamic_masks[i] for i in range(self.n_imgs)]
                 
@@ -932,7 +933,6 @@ class PointCloudOptimizer(BasePCOptimizer):
                     self.sam2_dynamic_masks[i] = torch.from_numpy(self.sam2_dynamic_masks[i][0]).to(device)
                     self.dynamic_masks[i] = self.dynamic_masks[i].to(device)
                     self.dynamic_masks[i] = self.dynamic_masks[i] | self.sam2_dynamic_masks[i]
-        
                 # Clean up
                 del predictor
         finally:

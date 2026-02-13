@@ -1,0 +1,22 @@
+universe        = vanilla
+executable      = run_easi3r_textregion.sh
+initialdir      = /home/qidili2/dynamic-object-mask/Easi3R
+
+log             = logs/easi3r_$(ClusterId).log
+output          = logs/easi3r_$(ClusterId).out
+error           = logs/easi3r_$(ClusterId).err
+
+getenv          = true
+stream_output   = True
+stream_error    = True
+
+environment     = "BASH_ENV=/usr/share/lmod/lmod/init/bash PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128"
+
+request_gpus    = 1
+request_cpus    = 6
+request_memory  = 240000
+request_disk    = 50000000
+
+requirements = (GPUs >= 1) && (Machine == "vision-c21.cs.illinois.edu")
+
+queue

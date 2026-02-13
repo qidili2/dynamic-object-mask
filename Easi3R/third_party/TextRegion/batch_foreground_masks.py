@@ -8,8 +8,8 @@ import cv2
 
 # ===== 标签（与 single 保持一致） =====
 MOVING_LABELS = ["moving object","human", "animal", "vehicle", "sport"]
-# BACKGROUND_LABELS = ["ground", "grass", "water", "tree", "cloud", "sky", "window", "wall"]
-BACKGROUND_LABELS = ["water", "ground", "solid", "plant", "building", "structural", "sky"]
+BACKGROUND_LABELS = ["ground", "grass", "water", "tree", "cloud", "sky", "window", "wall"]
+# BACKGROUND_LABELS = ["water", "ground", "solid", "plant", "building", "structural", "sky"]
 
 # ===== 公用：写 YAML，所有图使用同一标签表 =====
 def build_yaml(image_paths, yaml_path, labels):

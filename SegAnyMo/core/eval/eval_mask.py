@@ -350,6 +350,145 @@ def extract_frame_number(filename):
     match = re.search(r'\d+', filename)
     return int(match.group()) if match else None
 
+def read_pred_masks_from_gt(gt_dir, pred_root, exp_masks, pred_subdir=None, pred_pattern="*.png",
+                            resize_to=None, invert=False):
+    """
+    From GT frames (ordered), find matching pred masks by frame number.
+    If pred folder / file missing => fill zeros for that GT frame (NOT skip).
+    Return (T, H, W) uint8 {0,1}.
+    """
+    # 1) GT frame list + ids
+    gt_paths = sorted(glob(os.path.join(gt_dir, "*.png")))
+    gt_ids = [extract_frame_number(os.path.basename(p)) for p in gt_paths]
+    T = len(gt_ids)
+
+    # If GT empty, just return zeros_like(exp_masks) (or None)
+    if T == 0:
+        return np.zeros_like(exp_masks, dtype=np.uint8)
+
+    H, W = exp_masks.shape[1], exp_masks.shape[2]
+    out = np.zeros((T, H, W), dtype=np.uint8)
+
+    # 2) Decide pred directory (may not exist)
+    base_dir = pred_root if (pred_subdir is None) else os.path.join(pred_root, pred_subdir)
+    if not os.path.isdir(base_dir):
+        # pred seq folder missing -> keep all zeros
+        return out
+
+    # 3) Build map: frame_id -> pred_path
+    pred_paths = sorted(glob(os.path.join(base_dir, pred_pattern)))
+    if len(pred_paths) == 0:
+        pred_paths = (sorted(glob(os.path.join(base_dir, "*.png"))) +
+                      sorted(glob(os.path.join(base_dir, "*.jpg"))) +
+                      sorted(glob(os.path.join(base_dir, "*.jpeg"))) +
+                      sorted(glob(os.path.join(base_dir, "*.bmp"))))
+
+    pred_map = {}
+    for p in pred_paths:
+        fid = extract_frame_number(os.path.basename(p))
+        if fid is None:
+            continue
+        if fid not in pred_map:  # keep first if duplicates
+            pred_map[fid] = p
+
+    # 4) Fill per GT frame: missing -> zeros, found -> read/resize/binarize
+    for i, fid in enumerate(gt_ids):
+        p = pred_map.get(fid, None)
+        if p is None:
+            continue  # keep zeros
+
+        img = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            continue
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY)
+        if invert:
+            img = 255 - img
+
+        if resize_to is not None:
+            HH, WW = resize_to
+            img = cv2.resize(img, (WW, HH), interpolation=cv2.INTER_NEAREST)
+        else:
+            # even if user forgets resize_to, still force to GT size to avoid assert
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_NEAREST)
+
+        out[i] = (img > 0).astype(np.uint8)
+
+    return out
+
+def read_pred_masks_matching_gt(pred_root, gt_dir, exp_masks=None, pred_subdir=None,
+                                pred_pattern="*.png", resize_to=None, invert=False):
+    """
+    Read predicted masks but only for frames that exist in gt_dir (by frame number).
+    Returns uint8 array (T, H, W) aligned with GT ordering.
+    If a GT frame is missing in pred, fill with zeros.
+    """
+    # 1) collect gt frames (ordered)
+    gt_paths = sorted(glob(os.path.join(gt_dir, "*.png")))
+    gt_ids = [extract_frame_number(os.path.basename(p)) for p in gt_paths]
+
+    # 2) collect pred files map: frame_id -> path
+    base_dir = pred_root if (pred_subdir is None) else os.path.join(pred_root, pred_subdir)
+    if not os.path.isdir(base_dir):
+        base_dir = pred_root
+
+    pred_paths = sorted(glob(os.path.join(base_dir, pred_pattern)))
+    if len(pred_paths) == 0:
+        pred_paths = (sorted(glob(os.path.join(base_dir, "*.png"))) +
+                      sorted(glob(os.path.join(base_dir, "*.jpg"))) +
+                      sorted(glob(os.path.join(base_dir, "*.jpeg"))) +
+                      sorted(glob(os.path.join(base_dir, "*.bmp"))))
+
+    pred_map = {}
+    for p in pred_paths:
+        fid = extract_frame_number(os.path.basename(p))
+        if fid is None:
+            continue
+        # if duplicates exist, keep first (or change to keep last)
+        if fid not in pred_map:
+            pred_map[fid] = p
+
+    # 3) read pred in gt order
+    mask_list = []
+    for fid in gt_ids:
+        p = pred_map.get(fid, None)
+        if p is None:
+            # missing -> zeros
+            if exp_masks is not None:
+                H, W = exp_masks.shape[1], exp_masks.shape[2]
+                mask_list.append(np.zeros((H, W), dtype=np.uint8))
+            else:
+                mask_list.append(None)
+            continue
+
+        img = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            if exp_masks is not None:
+                H, W = exp_masks.shape[1], exp_masks.shape[2]
+                mask_list.append(np.zeros((H, W), dtype=np.uint8))
+            else:
+                mask_list.append(None)
+            continue
+
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY)
+        if invert:
+            img = 255 - img
+        if resize_to is not None:
+            H, W = resize_to
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_NEAREST)
+
+        mask_list.append((img > 0).astype(np.uint8))
+
+    # remove Nones if exp_masks was None (shouldn't happen in your eval)
+    if any(m is None for m in mask_list):
+        return None
+
+    return np.stack(mask_list, axis=0)
+
 def get_matching_pred_indices(pred_dir, gt_dir):
     # Get and sort all pred and gt mask paths
     pred_paths = sorted(glob(os.path.join(pred_dir, "*.png"))) + sorted(glob(os.path.join(pred_dir, "*.jpg")))
@@ -416,10 +555,10 @@ if __name__ == '__main__':
             print(f"[WARN] GT dir not found for seq '{seq}', skip.")
             continue
         if not os.path.isdir(res_dir):
-            print(f"[WARN] Pred dir not found for seq '{seq}', skip.")
-            continue
+            print(f"[WARN] Pred dir not found for seq '{seq}', count as 0.")
+
         
-        if "FBMS" in args.eval_dir:
+        if "1234" in args.eval_dir:
             gt_masks = read_masks_fbms(gt_dir)
             
             img_dir = os.path.join(args.img_dir,seq)
@@ -430,10 +569,12 @@ if __name__ == '__main__':
             gt_masks = read_masks(gt_dir)
             # If --resize_to_gt, use GT HxW for alignment; otherwise leave None (keep original size)
             resize_to = (gt_masks.shape[1], gt_masks.shape[2]) if args.resize_to_gt else None
-            pred_masks = read_pred_masks(
-                res_dir, exp_masks=gt_masks,
+            pred_masks = read_pred_masks_from_gt(
+                gt_dir=gt_dir,
+                pred_root=res_dir,          # res_dir 不存在也没关系：函数会直接返回全 0
+                exp_masks=gt_masks,
                 pred_subdir=args.pred_subdir,
-                pattern=args.pred_glob,
+                pred_pattern=args.pred_glob,
                 resize_to=resize_to,
                 invert=args.invert_pred
             )

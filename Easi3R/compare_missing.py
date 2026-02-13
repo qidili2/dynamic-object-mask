@@ -1,97 +1,139 @@
 #!/usr/bin/env python3
 import os, re, argparse, csv
-from collections import defaultdict
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--label_path', required=True, help='DAVIS Annotations/480p 路径')
-parser.add_argument('--results_path', required=True, help='你的结果根目录，内含若干 <sequence>/dynamic_mask_*.png')
+parser.add_argument('--label_path', required=True, help='只用来取 sequence 名字（以及可选统计帧数）')
+parser.add_argument('--results_path', required=True, help='结果根目录，内含 <sequence>/dynamic_mask_*.png')
 parser.add_argument('--seq', default='', help='仅检查某一个序列名（可选）')
 args = parser.parse_args()
 
 label_path = os.path.abspath(args.label_path)
 results_path = os.path.abspath(args.results_path)
 
-# DAVIS 的帧名通常是 00000.png 这种格式；我们把它转换成整数 index
-gt_num_re = re.compile(r'^(\d+)\.png$')
-pred_re   = re.compile(r'^dynamic_mask_(\d+)\.png$')
+pred_re = re.compile(r'^dynamic_mask_(\d+)\.png$')
 
-def list_gt_indices(seq_dir):
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+def count_images_anyname(seq_dir: str) -> int:
+    """统计 seq_dir 下的图片数量，不要求数字命名"""
+    n = 0
+    try:
+        for f in os.listdir(seq_dir):
+            p = os.path.join(seq_dir, f)
+            if os.path.isfile(p) and os.path.splitext(f)[1].lower() in IMG_EXTS:
+                n += 1
+    except FileNotFoundError:
+        return 0
+    return n
+
+def list_pred_indices(seq_dir: str):
     idx = []
-    for f in os.listdir(seq_dir):
-        m = gt_num_re.match(f)
-        if m:
-            idx.append(int(m.group(1)))
+    try:
+        for f in os.listdir(seq_dir):
+            m = pred_re.match(f)
+            if m:
+                idx.append(int(m.group(1)))
+    except FileNotFoundError:
+        return []
     return sorted(idx)
 
-def list_pred_indices(seq_dir):
-    idx = []
-    for f in os.listdir(seq_dir):
-        m = pred_re.match(f)
-        if m:
-            idx.append(int(m.group(1)))
-    return sorted(idx)
-
-# 序列集合：以 GT 为准
+# 序列集合：只看 label_path 下的子目录
 if args.seq:
     seqs = [args.seq]
 else:
     seqs = sorted([d for d in os.listdir(label_path)
                    if os.path.isdir(os.path.join(label_path, d))])
 
+if not seqs:
+    raise RuntimeError(f"label_path 下没有任何 sequence 子目录：{label_path}")
+
 summary_rows = []
 any_missing = False
 
 for s in seqs:
-    gt_dir   = os.path.join(label_path, s)
+    gt_dir = os.path.join(label_path, s)
     pred_dir = os.path.join(results_path, s)
 
     if not os.path.isdir(gt_dir):
-        print(f"[跳过] GT 不存在: {s}")
+        print(f"[跳过] label_path 下没有该序列目录: {s} -> {gt_dir}")
         continue
 
-    gt_idx = list_gt_indices(gt_dir)
-    if not gt_idx:
-        print(f"[警告] GT 空目录或没有数字命名PNG: {s} -> {gt_dir}")
-        continue
+    # 1) 先统计 GT 图像数量（不要求数字命名）
+    gt_frames = count_images_anyname(gt_dir)
 
+    # 2) 读预测
     if not os.path.isdir(pred_dir):
         print(f"[致命] 结果目录缺失: {s} -> {pred_dir}")
-        summary_rows.append([s, len(gt_idx), 0, len(gt_idx), 'MISSING_RESULT_DIR'])
+        # 期望帧数如果 gt_frames>0 用它，否则未知就写 -1
+        summary_rows.append([s, gt_frames if gt_frames > 0 else -1, 0,
+                             (gt_frames if gt_frames > 0 else -1), "MISSING_RESULT_DIR"])
         any_missing = True
         continue
 
     pred_idx = list_pred_indices(pred_dir)
+    pred_set = set(pred_idx)
 
-    # 缺失 = GT 有但预测没有
-    missing = [i for i in gt_idx if i not in set(pred_idx)]
+    # 3) 决定期望范围
+    #    - 如果 gt_frames>0: 期望 dynamic_mask_0..gt_frames-1
+    #    - 否则：如果有预测，就用 max_pred 推断期望 0..max_pred
+    #    - 否则：两边都没东西
+    if gt_frames > 0:
+        expected_n = gt_frames
+        expected = set(range(expected_n))
+        expected_note = f"GT(image-count)={gt_frames}"
+    elif pred_idx:
+        expected_n = max(pred_idx) + 1
+        expected = set(range(expected_n))
+        expected_note = f"GT=0，用 max_pred 推断 expected_n={expected_n}"
+    else:
+        print(f"[警告] {s}: GT 目录下没找到图片，预测目录也没有 dynamic_mask_*.png")
+        summary_rows.append([s, 0, 0, 0, "EMPTY_BOTH"])
+        continue
 
-    # 额外 = 预测有但 GT 没有（一般是越界或命名问题）
-    extra = [i for i in pred_idx if i not in set(gt_idx)]
+    missing = sorted(expected - pred_set)
+    extra = sorted(pred_set - expected)
 
-    # 打印
     if missing:
         any_missing = True
-        miss_names = [f"dynamic_mask_{i}.png" for i in missing[:10]]  # 仅预览前10个
-        print(f"[缺失] {s}: 缺 {len(missing)}/{len(gt_idx)} 帧  示例: {miss_names}")
+        print(f"[缺失] {s}: 缺 {len(missing)}/{expected_n} ({expected_note}) 示例:",
+              [f"dynamic_mask_{i}.png" for i in missing[:10]])
     else:
-        print(f"[OK]   {s}: 全部 {len(gt_idx)} 帧都有对应 dynamic_mask_*.png")
+        print(f"[OK]   {s}: 覆盖 dynamic_mask_0..dynamic_mask_{expected_n-1} ({expected_note})")
 
     if extra:
-        print(f"[多余] {s}: 存在 {len(extra)} 个结果无对应GT（示例前10个）：",
+        print(f"[多余] {s}: 存在 {len(extra)} 个越界结果 示例:",
               [f"dynamic_mask_{i}.png" for i in extra[:10]])
 
-    summary_rows.append([s, len(gt_idx), len(pred_idx), len(missing),
-                         "OK" if not missing else "MISSING" + ("/EXTRA" if extra else "")])
+    status = "OK"
+    if missing and extra:
+        status = "MISSING/EXTRA"
+    elif missing:
+        status = "MISSING"
+    elif extra:
+        status = "EXTRA"
 
-# 写一个汇总CSV到结果根目录
-csv_path = os.path.join(results_path, "missing_dynamic_masks_summary.csv")
-with open(csv_path, "w", newline="") as f:
+    summary_rows.append([s, expected_n, len(pred_idx), len(missing), status])
+
+csv_out = os.path.join(results_path, "missing_dynamic_masks_summary.csv")
+with open(csv_out, "w", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["sequence", "gt_frames", "pred_masks", "missing_count", "status"])
+    writer.writerow(["sequence", "expected_frames", "pred_masks_found", "missing_count", "status"])
     writer.writerows(summary_rows)
 
-print("\n汇总写入：", csv_path)
+print("\n汇总写入：", csv_out)
 if any_missing:
-    print("提示：按上面的 [缺失]/[致命] 输出，优先重跑缺失的序列或补齐命名。")
+    print("提示：按 [缺失]/[致命] 输出优先重跑缺失序列或补齐 dynamic_mask_*.png。")
 else:
-    print("👍 没发现缺失的 dynamic_mask_*.png（与 GT 帧数一致）。")
+    print("👍 没发现缺失。")
+
+# --- 只输出有缺失的序列，按 expected_frames(总帧数) 从短到长排序，空格连接 ---
+txt_out = os.path.join(results_path, "missing_sequences_sorted_by_length.txt")
+
+# summary_rows: [sequence, expected_frames, pred_masks_found, missing_count, status]
+missing_rows = [r for r in summary_rows if "MISSING" in str(r[4])]
+
+# expected_frames 可能为 -1（未知），放到最后
+missing_rows.sort(key=lambda r: (r[1] < 0, r[1]))
+
+with open(txt_out, "w") as f:
+    f.write(" ".join(r[0] for r in missing_rows))
