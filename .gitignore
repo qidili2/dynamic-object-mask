@@ -112,3 +112,12 @@ checkpoints/
 *.npz
 *.glb
 *.mp4 *.avi *.mov
+
+# datasets
+/data/
+
+# datasets
+/data/
+
+# datasets
+/data/
