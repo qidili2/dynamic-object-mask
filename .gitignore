@@ -84,6 +84,10 @@ temp/
 *.jpeg
 *.png
 *.gif
+*.bmp
+*.ppm
+*.pbm
+
 
 
 checkpoints/
