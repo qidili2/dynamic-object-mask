@@ -24,7 +24,7 @@ vis: False
 
 # model
 model_name: "traj_oa_depth"
-resume_path: "/mnt/data0/andy/SegAnyMo/current_work_dir/moseg.pth"
+resume_path: "current_work_dir/moseg.pth"
 tracks: True
 depths: True
 extra_info: True

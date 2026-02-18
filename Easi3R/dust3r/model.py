@@ -9,7 +9,8 @@ import torch
 import os
 from packaging import version
 import huggingface_hub
-
+import torch.nn.functional as F
+import torch.nn as nn
 from .utils.misc import fill_default_args, freeze_all_params, is_symmetrized, interleave, transpose_to_landscape
 from .heads import head_factory
 from dust3r.patch_embed import get_patch_embed, ManyAR_PatchEmbed
@@ -204,7 +205,16 @@ class AsymmetricCroCo3DStereo (
         return head(decout, img_shape)
 
     def forward(self, view1, view2):
-        # encode the two images --> B,S,D
+        # encode the two images --> B,S,D、
+        if not hasattr(self, "_printed_img_hw"):
+            self._printed_img_hw = True
+            if 'img' in view1 and 'img' in view2:
+                img1 = view1['img']
+                img2 = view2['img']
+                # expected: [B,3,H,W]
+                print("[DEBUG] view1['img']:", tuple(img1.shape), "view2['img']:", tuple(img2.shape))
+            else:
+                print("[DEBUG] no 'img' in view1/view2 keys:", view1.keys(), view2.keys())
         (shape1, shape2), (feat1, feat2), (pos1, pos2) = self._encode_symmetrized(view1, view2)
 
         # resize the mask to the shape of the feature
@@ -223,9 +233,29 @@ class AsymmetricCroCo3DStereo (
         res1['match_feature'] = self._get_feature(feat1, shape1)
         res1['cross_atten_maps_k'] = self._get_attn_k(torch.cat(cross_attn1), shape1)
         res2['cross_atten_maps_k'] = self._get_attn_k(torch.cat(cross_attn2), shape2)
-
+        
         return res1, res2
+    
+    def _resize_bg_mask(self, bg_mask, patch=16, thr=0.5):
+        """
+        bg_mask: [B, H, W] or [B, 1, H, W]  (float 0/1 or uint8 0/255)
+        return:  [B, N, 1] where N=(H/patch)*(W/patch)
+        """
+        if bg_mask is None:
+            return None
+        if bg_mask.dim() == 3:
+            bg_mask = bg_mask[:, None]  # -> [B,1,H,W]
+        bg_mask = bg_mask.float()
+        # 如果是 0/255，归一化到 0/1
+        if bg_mask.max() > 1.5:
+            bg_mask = bg_mask / 255.0
 
+        # avgpool 到 token 网格
+        pool = nn.AvgPool2d(kernel_size=patch, stride=patch)
+        bg_tok = pool(bg_mask)  # [B,1,h,w]
+        bg_tok = (bg_tok > thr).flatten(2).transpose(1, 2)  # [B,N,1]
+        
+        return bg_tok
     def _resize_mask(self, view, shape):
         if 'atten_mask' not in view:
             return None

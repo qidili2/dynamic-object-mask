@@ -477,7 +477,7 @@ def main():
         num_total_iter=0, empty_cache=False,
         batchify=True, use_atten_mask=True, use_region_pooling = True,
         sam2_group_output_dir = "/mnt/data0/andy/Easi3R/sam2_region_track/parachute",
-        textregion_annotations_dir = "/mnt/data0/andy/Easi3R/third_party/TextRegion/davis_finallabel_out2",
+        textregion_annotations_dir = "/mnt/data0/andy/Easi3R/third_party/TextRegion/davis_fi nallabel_out2",
         sam2_mask_refine=False
     )
 

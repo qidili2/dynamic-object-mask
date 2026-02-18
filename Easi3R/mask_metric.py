@@ -126,7 +126,8 @@ seq_list_davis17_moving = [
 ]
 
 # seq_list = seq_list_davis17_moving # seq_list_2016, seq_list_2017, None for all
-seq_list = None
+seq_list = seq_list_davis17_moving
+
 
 time_start = time()
 parser = argparse.ArgumentParser()

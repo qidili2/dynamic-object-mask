@@ -122,6 +122,7 @@ checkpoints/
 # datasets
 /data/
 
+<<<<<<< HEAD
 # datasets (local)
 data/
 Easi3R/FBMS_59/
@@ -143,3 +144,18 @@ SegAnyMo/MoCAsplit/
 # large artifacts
 SegAnyMo/MoCA.zip
 *.zip
+=======
+# local data / outputs
+SegAnyMo/MoCA/
+Easi3R/third_party/TextRegion/davis_background_track*/
+vggt/attn_viz_*/
+scene_diff/
+scenediff_annotator/
+
+# local data / outputs
+SegAnyMo/MoCA/
+Easi3R/third_party/TextRegion/davis_background_track*/
+vggt/attn_viz_*/
+scene_diff/
+scenediff_annotator/
+>>>>>>> sync changes (excluding base_opt)

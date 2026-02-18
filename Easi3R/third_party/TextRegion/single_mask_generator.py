@@ -22,7 +22,7 @@ import cv2
 # ====  固定参数区 ========
 # =============================
 
-IMAGE_PATH      = "/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/horsejump-high/00000.jpg"
+IMAGE_PATH      = "/mnt/data0/andy/Easi3R/DAVIS/JPEGImages/480p/drift-turn/00000.jpg"
 SEGMENTER_PY    = "TextRegionSegmenter.py"
 SAM2_CKPT       = "/mnt/data0/andy/Easi3R/third_party/sam2/checkpoints/sam2.1_hiera_large.pt"
 YAML_OUT        = "utils/_single_mixlabels.yaml"

@@ -89,6 +89,7 @@ class Aggregator(nn.Module):
                     init_values=init_values,
                     qk_norm=qk_norm,
                     rope=self.rope,
+                    fused_attn=False,   # <-- enable explicit attn matrix
                 )
                 for _ in range(depth)
             ]
@@ -106,6 +107,7 @@ class Aggregator(nn.Module):
                     init_values=init_values,
                     qk_norm=qk_norm,
                     rope=self.rope,
+                    fused_attn=False,   # <-- enable explicit attn matrix
                 )
                 for _ in range(depth)
             ]

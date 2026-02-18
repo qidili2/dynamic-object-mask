@@ -75,8 +75,25 @@ class Block(nn.Module):
         self.sample_drop_ratio = drop_path
 
     def forward(self, x: Tensor, pos=None) -> Tensor:
+        # def attn_residual_func(x: Tensor, pos=None) -> Tensor:
+        #     return self.ls1(self.attn(self.norm1(x), pos=pos))
         def attn_residual_func(x: Tensor, pos=None) -> Tensor:
-            return self.ls1(self.attn(self.norm1(x), pos=pos))
+            want_cam = getattr(self, "return_cam_attn", False)
+
+            if want_cam:
+                # 只在需要 cam-attn 时才传这个 kwarg（否则 MemEffAttention 会报错）
+                out = self.attn(self.norm1(x), pos=pos, return_cam_attn=True)
+                if isinstance(out, tuple):
+                    x_out, cam_attn = out
+                    self._last_cam_attn = cam_attn
+                    return self.ls1(x_out)
+                else:
+                    # 如果某个 attention 实现不支持 tuple 返回，退化处理
+                    return self.ls1(out)
+
+            # 默认路径：不传 return_cam_attn，兼容 MemEffAttention / patch_embed blocks
+            out = self.attn(self.norm1(x), pos=pos)
+            return self.ls1(out)
 
         def ffn_residual_func(x: Tensor) -> Tensor:
             return self.ls2(self.mlp(self.norm2(x)))

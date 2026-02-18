@@ -4,8 +4,8 @@ from PIL import Image
 import cv2
 
 davis_root = Path("/mnt/data0/andy/SegAnyMo/DAVIS")
-res_root   = Path("/mnt/data0/andy/SegAnyMo/result/sam2/initial_preds") 
-out_root   = Path("/mnt/data0/andy/SegAnyMo/result/fixed_mask")         
+res_root   = Path("/mnt/data0/andy/Easi3R/results/davisunsupervised/easi3r_textregion_finalmovinglabel_refine3_test") 
+out_root   = Path("/mnt/data0/andy/SegAnyMo/Easi3rresult/fixed_mask")         
 
 # 1) 不再读 val.txt，而是遍历所有 unsupervised GT 里有的序列
 gt_root = davis_root / "Annotations_unsupervised/480p"
