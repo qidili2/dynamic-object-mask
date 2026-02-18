@@ -44,8 +44,6 @@ for seq in "${SEQS[@]}"; do
     --output_dir "${OUT_ROOT}" \
     --use_atten_mask \
     --sam2_mask_refine \
-    --use_region_pooling \
-    --textregion_annotations_dir "${TEXTREGION_ROOT}" \
     --seq_list "${seq}" \
     2>&1 | tee "${LOG_DIR}/${seq}.log" \
     || { echo "[EASi3R][WARN] seq failed: ${seq}"; FAILED+=("${seq}"); continue; }

@@ -50,7 +50,6 @@ for seq in "${SEQS[@]}"; do
     --data_dir "${DATA_DIR}" \
     --output_dir "${OUT_ROOT}" \
     --use_atten_mask \
-    --sam2_mask_refine \
     --use_region_pooling \
     --textregion_annotations_dir "${TEXTREGION_ROOT}" \
     --seq_list "${seq}" \

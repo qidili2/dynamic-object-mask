@@ -3354,3 +3354,5 @@ def adaptive_multiotsu_variance(img, verbose=False, max_classes=3):
         print(f"[AMOV] selected K={best_n_classes}, threshold={best_threshold:.6f}")
 
     return best_threshold
+
+# test git
