@@ -139,3 +139,7 @@ Easi3R/SegTrackv2/
 SegAnyMo/MoCA/
 SegAnyMo/MoCA_short/
 SegAnyMo/MoCAsplit/
+
+# large artifacts
+SegAnyMo/MoCA.zip
+*.zip
