@@ -127,12 +127,42 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
                 filelist, size=load_img_size, verbose=False,
                 dynamic_mask_root=mask_path_seq, crop=not args.no_crop
             )
+            # ---- inject TextRegion background masks (optional) ----
+            bg_root = getattr(args, "textregion_bg_track_dir", None)
+
+            if bg_root:
+                for i, img in enumerate(imgs):
+                    im_path = filelist[i]
+                    seq_name = os.path.basename(os.path.dirname(im_path))
+                    stem = os.path.splitext(os.path.basename(im_path))[0]  # "00000"
+
+                    bg_path = os.path.join(bg_root, seq_name, "masks", f"{stem}.png")
+                    if os.path.isfile(bg_path):
+                        bg = cv2.imread(bg_path, cv2.IMREAD_GRAYSCALE)  # 0/255
+                        if bg is not None:
+                            H = img["img"].shape[-2]
+                            W = img["img"].shape[-1]
+                            bg = cv2.resize(bg, (W, H), interpolation=cv2.INTER_NEAREST)
+                            img["bg_mask"] = torch.from_numpy(bg).unsqueeze(0)  # [1,H,W]
+                        else:
+                            img["bg_mask"] = None
+                    else:
+                        img["bg_mask"] = None
+            # ------------------------------------------------------
+
             if args.eval_dataset == 'davis' and len(imgs) > 95:
                 # use swinstride-4
                 scene_graph_type = scene_graph_type.replace('5', '4')
             pairs = make_pairs(
                 imgs, scene_graph=scene_graph_type, prefilter=None, symmetrize=True
             ) 
+
+            # optionally enable camera embedding visualization (saved under {save_dir}/{seq}/cam_emb_vis/)
+            if getattr(args, 'cam_emb_vis', False):
+                model.cam_emb_vis_dir = os.path.join(save_dir, seq, 'cam_emb_vis')
+                model._cam_emb_seen = set()   # reset per sequence so all frames are saved
+            else:
+                model.cam_emb_vis_dir = None
 
             output = inference(pairs, model, device, batch_size=1, verbose=not silent)
 
@@ -178,7 +208,7 @@ def eval_pose_estimation_dist(args, model, device, img_path, save_dir=None, mask
                         flow_loss_start_epoch=args.flow_loss_start_epoch, flow_loss_thre=args.flow_loss_thre, translation_weight=args.translation_weight,
                         sintel_ckpt=args.eval_dataset == 'sintel', use_self_mask=not args.use_gt_mask, sam2_mask_refine=args.sam2_mask_refine,
                         empty_cache=len(imgs) >= 80 and len(pairs) > 600, pxl_thre=args.pxl_thresh, # empty cache to make it run on 48GB GPU
-                        use_atten_mask=args.use_atten_mask, use_region_pooling=args.use_region_pooling, batchify=not args.not_batchify,textregion_annotations_dir=args.textregion_annotations_dir, sam2_group_output_dir=f"{save_dir}/{seq}",
+                        use_atten_mask=args.use_atten_mask, use_region_pooling=args.use_region_pooling, batchify=not args.not_batchify,textregion_annotations_dir=args.textregion_annotations_dir, textregion_bg_track_dir = args.textregion_bg_track_dir, sam2_group_output_dir=f"{save_dir}/{seq}",
                     )
 
                     os.makedirs(f'{save_dir}/{seq}', exist_ok=True)

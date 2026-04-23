@@ -122,6 +122,12 @@ def get_args_parser():
     # easi3r
     parser.add_argument('--use_atten_mask', action='store_true', default=False, help='use attention mask for pose optimization')
     parser.add_argument('--use_region_pooling', action='store_true', default=False, help='use group region for spatial info')
+    parser.add_argument(
+        "--textregion_bg_track_dir",
+        type=str,
+        default=None,
+        help="Path to TextRegion background track output (e.g. .../davis_background_track). If None, disable bg mask injection."
+    )
     parser.add_argument('--eval_dataset', type=str, default='sintel', 
                     choices=['davis', 'kitti', 'bonn', 'scannet', 'tum', 'nyu', 'sintel', 'iphone', 'adt', 'drivetrack'], 
                     help='choose dataset for pose evaluation')
@@ -139,6 +145,8 @@ def get_args_parser():
         help="Path to TextRegion-generated binary masks (e.g., outputs or sam2_group_output_dir). "
             "If provided, the pipeline will use these masks to validate/flip dynamic_map."
     )
+    parser.add_argument('--cam_emb_vis', action='store_true', default=False,
+                        help='save camera embedding PCA visualization alongside attention maps for each sequence')
     return parser
 
 def load_model(args, device):

@@ -42,6 +42,10 @@ class PointCloudOptimizer(BasePCOptimizer):
     def __init__(self, *args, optimize_pp=False, focal_break=20, shared_focal=False, flow_loss_fn='smooth_l1', flow_loss_weight=0.0, 
                  depth_regularize_weight=0.0, num_total_iter=300, temporal_smoothing_weight=0, translation_weight=0.1, flow_loss_start_epoch=0.15, flow_loss_thre=50,
                  sintel_ckpt=False, use_self_mask=False, pxl_thre=50, sam2_mask_refine=True, motion_mask_thre=0.35, batchify=True, use_atten_mask=False, **kwargs):
+        self.textregion_bg_track_dir = kwargs.pop("textregion_bg_track_dir", None)
+        if self.textregion_bg_track_dir is not None:
+            print(f"[Init] textregion_bg_track_dir = {self.textregion_bg_track_dir}")
+            
         super().__init__(*args, use_atten_mask=use_atten_mask, **kwargs)
 
         self.has_im_poses = True  # by definition of this class
@@ -178,6 +182,78 @@ class PointCloudOptimizer(BasePCOptimizer):
             torch.cuda.empty_cache()
             
         return flow_ij, flow_ji, valid_mask_i, valid_mask_j
+    @torch.no_grad()
+    def _parse_seq_from_imgpath(self, img_path: str):
+        parts = img_path.split('/')
+        if 'JPEGImages' in parts:
+            i = parts.index('JPEGImages')
+            if len(parts) > i + 2:
+                return parts[i + 2]
+        return os.path.basename(os.path.dirname(img_path))
+
+    @torch.no_grad()
+    def load_textregion_bg_track_masks(self, binarize_thr=127):
+        """
+        读取 TextRegion 的背景跟踪结果（全帧），返回: bg_masks [B, H, W] bool
+        bg_masks[t] == True 表示 background
+        """
+        if not hasattr(self, "textregion_bg_track_dir") or self.textregion_bg_track_dir is None:
+            print("[TR BG-Track] textregion_bg_track_dir missing")
+            return None
+
+        if not hasattr(self, "img_pathes") or self.img_pathes is None or len(self.img_pathes) == 0:
+            print("[TR BG-Track] img_pathes missing/empty; cannot infer seq")
+
+        seq = self._parse_seq_from_imgpath(self.img_pathes[0])
+        masks_dir = os.path.join(self.textregion_bg_track_dir, seq, "masks")
+        if not os.path.isdir(masks_dir):
+            print(f"[TR BG-Track] masks_dir not found: {masks_dir}")
+            return None
+
+        H_img, W_img = self.imshape
+        bg_list = []
+        missing = 0
+
+        # 假设你的帧命名就是 00000.png, 00001.png, ...
+        for t in range(self.n_imgs):
+            p = os.path.join(masks_dir, f"{t:05d}.png")
+            if not os.path.exists(p):
+                missing += 1
+                bg_list.append(None)
+                continue
+            m = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+            if m is None:
+                missing += 1
+                bg_list.append(None)
+                continue
+
+            # 统一尺寸
+            if m.shape != (H_img, W_img):
+                m = cv2.resize(m, (W_img, H_img), interpolation=cv2.INTER_NEAREST)
+
+            # 假设：>127 为 background（如果你实际相反，把 > 改成 <= 即可）
+            bg = (m > binarize_thr)
+            bg_list.append(torch.from_numpy(bg).bool())
+
+        # 如果全缺就返回 None
+        valid_cnt = sum(x is not None for x in bg_list)
+        if valid_cnt == 0:
+            print(f"[TR BG-Track] No valid masks under {masks_dir}")
+            return None
+
+        # 对缺失帧：用上一帧填充（或者全 False）
+        last = None
+        for i in range(len(bg_list)):
+            if bg_list[i] is None:
+                if last is None:
+                    bg_list[i] = torch.zeros((H_img, W_img), dtype=torch.bool)
+                else:
+                    bg_list[i] = last.clone()
+            last = bg_list[i]
+
+        bg_masks = torch.stack(bg_list, dim=0)  # [B,H,W]
+        print(f"[TR BG-Track] Loaded bg masks: valid={valid_cnt}/{self.n_imgs}, missing={missing}")
+        return bg_masks
     @torch.no_grad()
     def load_textregion_first_frame(self, prefer_npy=True, bin_suffix="_bin"):
         """
@@ -423,61 +499,106 @@ class PointCloudOptimizer(BasePCOptimizer):
         # 使用 adaptive_multiotsu_variance 计算阈值
         threshold = adaptive_multiotsu_variance(global_att_values)
         print(f"[Region-level Dynamic Detection] Attention threshold: {threshold:.4f}")
-        # ================== Step5-7 ==================
-        # 逻辑：若已有 valid 前景（来自 validate_and_adjust_dynamic_map_with_gt），
-        #      则用它作为“前景候选”，并仅将“非前景”的 objects 作为背景候选进行噪声剔除；
-        #      若没有 valid 前景，则不做过滤，直接在全体 objects 上用全局阈值判定。
+        
+        # ===== 新增：优先使用 TextRegion bg_track 来做 foreground/background object 划分 =====
+        bg_track_masks = self.load_textregion_bg_track_masks()
+        use_bg_track = isinstance(bg_track_masks, torch.Tensor)
 
-        # 取缓存的 valid 前景集合（若存在）
+        bg_object_ratio = {}  # {oid: avg_bg_ratio_across_frames}
+
+        if use_bg_track:
+            bg_track_masks = bg_track_masks.to(device)          # [B,H,W] bool
+            first_frame_groups = groups_hr[0]                   # [H,W]
+            print("[Region-level Dynamic Detection] Using TR bg-track masks for filtering")
+
+            # 统计每个 object 在全帧中落在 background 的比例（按帧平均）
+            for oid in list(object_global_attention.keys()):
+                if oid == 0:
+                    continue
+                ratios = []
+                for t in range(B):
+                    obj_mask = (groups_hr[t] == oid)
+                    denom = obj_mask.sum().item()
+                    if denom == 0:
+                        continue
+                    bg_pixels = (obj_mask & bg_track_masks[t]).sum().item()
+                    ratios.append(bg_pixels / max(denom, 1))
+                bg_object_ratio[oid] = float(np.mean(ratios)) if len(ratios) > 0 else 1.0
+
+            # 用 bg_ratio 划分 foreground / background candidates
+            # 这里的阈值你可以调：0.9 表示“90%以上都在背景里”
+            BG_RATIO_TH = 0.7
+            foreground_object_ids_bg = {oid for oid, r in bg_object_ratio.items() if r < BG_RATIO_TH}
+            background_candidates_bg = set(object_global_attention.keys()) - foreground_object_ids_bg
+
+            print(f"[TR BG-Track] FG candidates={len(foreground_object_ids_bg)} "
+                f"BG candidates={len(background_candidates_bg)} (BG_RATIO_TH={BG_RATIO_TH})")
+        # ================== Step5-7 (BG-Track > cached valid-FG > all) ==================
+        # 目标：
+        # 1) 优先用 bg_track 全帧背景 mask 把 objects 分成 foreground / background candidates
+        # 2) 若无 bg_track，再用 cached valid-FG（来自 validate_and_adjust_dynamic_map_with_gt）
+        # 3) 若两者都无，则不做过滤，直接在全体 objects 上阈值
+
         cached_fg_valid = getattr(self, "tr_fg_valid_objects", set())
         use_cached_fg = isinstance(cached_fg_valid, set) and len(cached_fg_valid) > 0
 
-        if use_cached_fg:
-            # 只用缓存到的“有效前景”作为最终候选；其他都视作背景候选
-            # 注意：必须和 object_global_attention 的键集合求交，避免越界
+        if use_bg_track:
+            # bg_track 优先：foreground = 非背景占比高的 objects
+            foreground_object_ids = set(oid for oid in foreground_object_ids_bg if oid in object_global_attention)
+            background_candidates = set(object_global_attention.keys()) - foreground_object_ids
+            print(f"[Region-level Dynamic Detection] Using BG-Track FG: "
+                f"{len(foreground_object_ids)} foreground / {len(background_candidates)} background candidates")
+
+        elif use_cached_fg:
+            # 其次：用 cached valid-FG
             foreground_object_ids = set(oid for oid in cached_fg_valid if oid in object_global_attention)
             background_candidates = set(object_global_attention.keys()) - foreground_object_ids
             print(f"[Region-level Dynamic Detection] Using cached valid-FG: "
                 f"{len(foreground_object_ids)} foreground / {len(background_candidates)} background candidates")
 
-            # —— Step 5：用全局阈值剔除“高 attention 的背景噪声”（只在 background_candidates 上做）
-            noisy_background_objects = {oid for oid in background_candidates
-                                        if object_global_attention.get(oid, 0.0) > threshold}
-            for oid in noisy_background_objects:
-                if oid in object_global_attention:
-                    del object_global_attention[oid]
-            print(f"[Region-level Dynamic Detection] Removed {len(noisy_background_objects)} noisy background objects")
-
-            # —— Step 6：在“剔除噪声后的所有 objects（前景 + 非噪声背景）”上重算阈值
-            # 注意：此处不是只用前景重算阈值，仍是“剩余所有对象”
-            global_att_values = np.array(list(object_global_attention.values()))
-            if len(global_att_values) == 0:
-                print("[WARNING] No objects remaining after background noise removal; using empty dynamic masks")
-                self.dynamic_masks = [torch.zeros((H_img, W_img), dtype=torch.bool, device=device) for _ in range(B)]
-                self.init_dynamic_masks = [m.clone() for m in self.dynamic_masks]
-                return
-            threshold_after_filter = adaptive_multiotsu_variance(global_att_values)
-            print(f"[Region-level Dynamic Detection] Recalculated attention threshold after filtering: "
-                f"{threshold_after_filter:.4f}")
-
         else:
-            # 没有 valid 前景 → 不做过滤，直接用“全体 objects”与第一次全局阈值
+            # 最后：无任何先验，不过滤
             foreground_object_ids = set(object_global_attention.keys())
-            noisy_background_objects = set()
-            threshold_after_filter = threshold
-            print("[Region-level Dynamic Detection] No cached valid-FG; "
+            background_candidates = set()
+            print("[Region-level Dynamic Detection] No bg-track or cached valid-FG; "
                 "skipping filtering and using global threshold on all objects")
 
-        # —— Step 7：仅在“前景 objects”中确定哪些是 dynamic（使用 threshold_after_filter）
+        # —— Step 5：用“第一次全局阈值 threshold”剔除“高 attention 的背景噪声”
+        # 注意：只有在我们真的定义了 background_candidates 的情况下才做（即 use_bg_track 或 use_cached_fg）
+        noisy_background_objects = set()
+        if len(background_candidates) > 0:
+            noisy_background_objects = {oid for oid in background_candidates
+                                        if object_global_attention.get(oid, 0.0) > threshold}
+
+            for oid in noisy_background_objects:
+                object_global_attention.pop(oid, None)
+
+            # 同步把 noisy 从 background_candidates 移走（可选，但更干净）
+            background_candidates -= noisy_background_objects
+
+            print(f"[Region-level Dynamic Detection] Removed {len(noisy_background_objects)} noisy background objects")
+
+        # —— Step 6：在“剔除噪声后的所有 objects（前景 + 非噪声背景）”上重算阈值
+        global_att_values = np.array(list(object_global_attention.values()))
+        if len(global_att_values) == 0:
+            print("[WARNING] No objects remaining after background noise removal; using empty dynamic masks")
+            self.dynamic_masks = [torch.zeros((H_img, W_img), dtype=torch.bool, device=device) for _ in range(B)]
+            self.init_dynamic_masks = [m.clone() for m in self.dynamic_masks]
+            return
+
+        threshold_after_filter = adaptive_multiotsu_variance(global_att_values)
+        print(f"[Region-level Dynamic Detection] Recalculated attention threshold after filtering: "
+            f"{threshold_after_filter:.4f}")
+
+        # —— Step 7：仅在“foreground objects”中确定哪些是 dynamic（使用 threshold_after_filter）
         dynamic_object_ids = set()
 
-        # 保底 1：前景只有一个 object，直接判为 dynamic（不走阈值）
+        # 保底 1：前景只有一个 object，直接判为 dynamic
         if len(foreground_object_ids) == 1:
             only_oid = next(iter(foreground_object_ids))
             dynamic_object_ids.add(only_oid)
             print(f"[Fallback] Only one foreground object ({only_oid}); mark as dynamic without thresholding.")
         else:
-            # 正常阈值筛选（> 阈值为 dynamic）
             for oid in foreground_object_ids:
                 if object_global_attention.get(oid, 0.0) > threshold_after_filter:
                     dynamic_object_ids.add(oid)
@@ -503,13 +624,14 @@ class PointCloudOptimizer(BasePCOptimizer):
             if avg_dyn_ratio < MIN_MASK_RATIO:
                 print(f"[Fallback] Dynamic area too small (avg {avg_dyn_ratio*100:.3f}%). "
                     f"Recomputing threshold WITHIN foreground objects only and re-selecting dynamics.")
-                # 只用前景 objects 的注意力重算阈值
-                fg_att_values = np.array([object_global_attention[oid] for oid in foreground_object_ids],
+
+                fg_att_values = np.array([object_global_attention.get(oid, 0.0) for oid in foreground_object_ids],
                                         dtype=np.float32)
                 if len(fg_att_values) > 0:
                     threshold_fg_only = adaptive_multiotsu_variance(fg_att_values)
                 else:
-                    threshold_fg_only = threshold_after_filter  # 极端兜底
+                    threshold_fg_only = threshold_after_filter
+
                 print(f"[Fallback] Foreground-only Otsu threshold: {threshold_fg_only:.4f}")
 
                 dynamic_object_ids = {
@@ -517,6 +639,7 @@ class PointCloudOptimizer(BasePCOptimizer):
                     if object_global_attention.get(oid, 0.0) > threshold_fg_only
                 }
                 print(f"[Fallback] Foreground-only selection -> {len(dynamic_object_ids)}/{len(foreground_object_ids)} dynamic")
+
         # ================== Step 5–7（替换结束） ==================
 
         print(f"[Region-level Dynamic Detection] {len(dynamic_object_ids)}/{len(foreground_object_ids)} foreground objects marked as dynamic")

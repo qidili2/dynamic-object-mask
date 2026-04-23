@@ -46,6 +46,45 @@ from matplotlib import cm
 
 inferno_cmap = cm.get_cmap("inferno") 
 
+def _mem_cuda(tag: str, device=None):
+    """Safe CUDA memory snapshot. No-op if device is CPU / CUDA not available."""
+
+    if not torch.cuda.is_available():
+        return
+
+    # Normalize device
+    if device is None:
+        # current cuda device
+        device = torch.device(f"cuda:{torch.cuda.current_device()}")
+    elif isinstance(device, str):
+        device = torch.device(device)
+
+    # If someone passes a CPU device, just do nothing
+    if not isinstance(device, torch.device) or device.type != "cuda":
+        return
+
+    # Guard: device index
+    if device.index is None:
+        device = torch.device(f"cuda:{torch.cuda.current_device()}")
+
+    try:
+        torch.cuda.synchronize(device)
+    except Exception:
+        pass
+
+    alloc = torch.cuda.memory_allocated(device) / (1024**3)
+    rsvd  = torch.cuda.memory_reserved(device) / (1024**3)
+    maxa  = torch.cuda.max_memory_allocated(device) / (1024**3)
+    maxr  = torch.cuda.max_memory_reserved(device) / (1024**3)
+
+    try:
+        free, total = torch.cuda.mem_get_info(device)
+        free_g = free / (1024**3)
+        tot_g  = total / (1024**3)
+        print(f"[CUDA-MEM] {tag}: alloc={alloc:.3f}G rsvd={rsvd:.3f}G max_alloc={maxa:.3f}G max_rsvd={maxr:.3f}G free={free_g:.3f}/{tot_g:.3f}G dev={device}")
+    except Exception:
+        print(f"[CUDA-MEM] {tag}: alloc={alloc:.3f}G rsvd={rsvd:.3f}G max_alloc={maxa:.3f}G max_rsvd={maxr:.3f}G dev={device}")
+        
 def c2w_to_tumpose(c2w):
     """
     Convert a camera-to-world matrix to a tuple of translation and rotation
@@ -184,25 +223,31 @@ class BasePCOptimizer (nn.Module):
 
         if use_atten_mask:
             # attention map
+            _mem_cuda("init/use_atten_mask: enter")
             cross_att_k_i_mean, cross_att_k_i_var, cross_att_k_j_mean, cross_att_k_j_var = self.aggregate_attention_maps(pred1, pred2)
-            
+            _mem_cuda("init/after aggregate_attention_maps")
             if use_region_pooling:
                 # if not hasattr(self, "region_groups") or self.region_groups is None or len(self.region_groups) != self.n_imgs:
                 #     self.generate_sam2_region_groups(min_size=100, vis_dir=sam2_group_output_dir)  
                 #     # self.generate_sam2_region_groups(min_size=100)  
                 if (not hasattr(self, "region_groups")) or (self.region_groups is None) or (len(self.region_groups) != self.n_imgs):
                     # 你也可以把 vis_dir=None；保留的话会存每帧的 group 可视化和 .npy
+                    _mem_cuda("init/before generate_region_groups_with_tracking")
                     self.generate_region_groups_with_tracking(
                         proposal_backend="sam1",  
                         min_size=100,             
                         vis_dir=sam2_group_output_dir            
                     )
+                    _mem_cuda("init/after generate_region_groups_with_tracking")
                     print(f"[INIT] Successfully generated {len(self.region_groups)} region groups")
 
 
                 H_img, W_img = self.imshapes[0]
+                _mem_cuda("init/before group_img stack")
                 group_img = torch.stack([g.to(self.device) for g in self.region_groups], 0)        # [B,H,W] int
+                _mem_cuda("init/after group_img stack")
                 group_tok = self._downsample_groups_to_tokens(group_img, H_img, W_img, patch=16)    # [B,Ht,Wt] int
+                _mem_cuda("init/after group_tok downsample")
 
                 cross_att_k_i_mean = self._region_group_mean_pool_map(cross_att_k_i_mean, group_tok, include_background=False)
                 cross_att_k_i_var  = self._region_group_mean_pool_map(cross_att_k_i_var,  group_tok, include_background=False)
@@ -229,12 +274,13 @@ class BasePCOptimizer (nn.Module):
             self.cross_att_k_j_var, self.cross_att_k_j_var_fused = fuse_attention_channels(cross_att_k_j_var)
             
             # create dynamic mask
-            dynamic_map = (1-self.cross_att_k_i_mean_fused) * self.cross_att_k_i_var_fused * self.cross_att_k_j_mean_fused * (1-self.cross_att_k_j_var_fused)
+            # dynamic_map = (1-self.cross_att_k_i_mean_fused) * self.cross_att_k_i_var_fused * self.cross_att_k_j_mean_fused * (1-self.cross_att_k_j_var_fused)
+            dynamic_map = (1-self.cross_att_k_i_mean_fused) * self.cross_att_k_i_var_fused * self.cross_att_k_j_mean_fused
             dynamic_map_min = dynamic_map.min(dim=1, keepdim=True)[0].min(dim=2, keepdim=True)[0] # B, 1, 1
             dynamic_map_max = dynamic_map.max(dim=1, keepdim=True)[0].max(dim=2, keepdim=True)[0] # B, 1, 1
             
             self.dynamic_map = (dynamic_map - dynamic_map_min) / (dynamic_map_max - dynamic_map_min + 1e-6)
-
+            _mem_cuda("init/after dynamic_map")
             
             if textregion_annotations_dir is None:
                 print("[TR Validation] No textregion_annotations_dir provided, skip TextRegion validation")
@@ -243,16 +289,16 @@ class BasePCOptimizer (nn.Module):
             else:
                 print(f"[TR Validation] GT directory not found: {textregion_annotations_dir}")
                             
-            try:
-                print("Starting variance analysis...")
-                variances, attention_values = self.compute_region_attention_variance_and_visualize(
-                    save_folder=sam2_group_output_dir if sam2_group_output_dir else 'demo_tmp/region_variance_vis'
-                )
-                print(f"Variance analysis completed successfully! Results in: {sam2_group_output_dir if sam2_group_output_dir else 'demo_tmp/region_variance_vis'}")
-            except Exception as e:
-                print(f"Warning: Could not compute variance analysis during init: {e}")
-                import traceback
-                traceback.print_exc()
+            # try:
+            #     print("Starting variance analysis...")
+            #     variances, attention_values = self.compute_region_attention_variance_and_visualize(
+            #         save_folder=sam2_group_output_dir if sam2_group_output_dir else 'demo_tmp/region_variance_vis'
+            #     )
+            #     print(f"Variance analysis completed successfully! Results in: {sam2_group_output_dir if sam2_group_output_dir else 'demo_tmp/region_variance_vis'}")
+            # except Exception as e:
+            #     print(f"Warning: Could not compute variance analysis during init: {e}")
+            #     import traceback
+            #     traceback.print_exc()
             # feature
             pred1_feat = pred1['match_feature']
             feat_i = NoGradParamDict({ij: nn.Parameter(pred1_feat[n], requires_grad=False) for n, ij in enumerate(self.str_edges)})
@@ -260,10 +306,13 @@ class BasePCOptimizer (nn.Module):
             stacked_feat = [None] * len(self.imshapes)
             for i, ei in enumerate(torch.tensor([i for i, j in self.edges])):
                 stacked_feat[ei]=stacked_feat_i[i]
+            _mem_cuda("init/before stacked_feat")
             self.stacked_feat = torch.stack(stacked_feat).float().detach()
+            _mem_cuda("init/after stacked_feat")
 
+            _mem_cuda("init/before cluster_attention_maps")
             self.refined_dynamic_map, self.dynamic_map_labels = cluster_attention_maps(self.stacked_feat, self.dynamic_map, n_clusters=64)
-            
+            _mem_cuda("init/after cluster_attention_maps")
     # @torch.no_grad()
     # def validate_and_adjust_dynamic_map_with_gt(self,
     #                                         textregion_root: str,
@@ -2492,92 +2541,215 @@ class BasePCOptimizer (nn.Module):
     @torch.no_grad()
     def compute_region_attention_variance_and_visualize(self, save_folder='demo_tmp/region_variance_vis', window_size=5):
         """
-        计算每个region object在所有帧上mean pool后的attention方差，
-        并生成基于方差的可视化（方差越大越红）
-        新增：滑动窗口方差计算
-        
-        Args:
-            save_folder: 保存结果的文件夹
-            window_size: 滑动窗口大小
+        计算每个 region object 在所有帧上 mean pool 后的 attention 方差，
+        并生成基于方差的可视化（方差越大越红）。
+        同时额外保存两组逐帧图：
+        1) mean pooling 之前的 attention map（上采样到高分辨率）；
+        2) group region mean pooling 之后、object 跨帧 mean 之前的 per-frame dynamic map。
         """
-        if not hasattr(self, 'video_segments') or not hasattr(self, 'region_groups'):
+        from collections import defaultdict
+        import os
+        import numpy as np
+        import cv2
+        import torch
+        import torch.nn.functional as F
+        from matplotlib import cm
+
+        if not hasattr(self, "video_segments") or not hasattr(self, "region_groups"):
             print("Error: video_segments or region_groups not found. Please run region tracking first.")
             return None, None
-        
-        # Debug: Check what attention-related attributes exist
-        attention_attrs = []
-        for attr in ['dynamic_map', 'refined_dynamic_map', 'cross_att_k_i_mean_fused', 'cross_att_k_i_var_fused']:
-            if hasattr(self, attr):
-                val = getattr(self, attr)
-                if val is not None:
-                    attention_attrs.append(f"{attr}: {type(val)} shape={getattr(val, 'shape', 'N/A')}")
-                else:
-                    attention_attrs.append(f"{attr}: None")
-            else:
-                attention_attrs.append(f"{attr}: not found")
-        
-        print("Available attention attributes:")
-        for attr_info in attention_attrs:
-            print(f"  - {attr_info}")
-        
-        # Use dynamic_map directly for variance analysis
-        if hasattr(self, 'dynamic_map') and self.dynamic_map is not None:
-            attention_source = self.dynamic_map
-            print(f"Using dynamic_map with shape: {self.dynamic_map.shape}")
+
+        # 选择用哪一个 attention source
+        attention_source = None
+        if hasattr(self, "dynamic_map") and self.dynamic_map is not None:
+            attention_source = self.dynamic_map  # [T, H_att, W_att]
+            print(f"[RegionStats] Using dynamic_map with shape: {attention_source.shape}")
+        elif hasattr(self, "refined_dynamic_map") and self.refined_dynamic_map is not None:
+            attention_source = self.refined_dynamic_map
+            print(f"[RegionStats] Using refined_dynamic_map with shape: {attention_source.shape}")
         else:
-            print("Error: dynamic_map not found. Please ensure use_atten_mask=True when initializing.")
+            print("Error: dynamic_map / refined_dynamic_map not found. Please ensure use_atten_mask=True when initializing.")
             return None, None
-        
+
+        T, H_att, W_att = attention_source.shape
+        print(f"[RegionStats] Attention map size: {H_att} x {W_att}, frames: {T}")
+        if len(self.region_groups) == 0:
+            print("Error: region_groups is empty.")
+            return None, None
+
+        region_H, region_W = self.region_groups[0].shape
+        print(f"[RegionStats] Region map size: {region_H} x {region_W}")
+
+        # === 创建输出目录 ===
         os.makedirs(save_folder, exist_ok=True)
-        os.makedirs(os.path.join(save_folder, 'frames_variance'), exist_ok=True)
-        os.makedirs(os.path.join(save_folder, 'frames_overlay'), exist_ok=True)
-        os.makedirs(os.path.join(save_folder, 'frames_mean'), exist_ok=True)  # 新增
-        os.makedirs(os.path.join(save_folder, 'frames_mean_overlay'), exist_ok=True)  # 新增
-        os.makedirs(os.path.join(save_folder, 'frames_window_variance'), exist_ok=True)
-        os.makedirs(os.path.join(save_folder, 'frames_window_overlay'), exist_ok=True)
-        os.makedirs(os.path.join(save_folder, 'window_variance_npy'), exist_ok=True)
-        
-        # 收集所有object的所有帧的mean pooled attention值
-        object_attention_values = defaultdict(list)
-        frame_object_means = []
-        
-        print(f"Computing mean pooled attention for {len(self.region_groups)} frames...")
-        
-        # 获取attention map和region groups的尺寸
-        attention_H, attention_W = attention_source.shape[1], attention_source.shape[2]
-        print(f"Attention map size: {attention_H} x {attention_W}")
-        if len(self.region_groups) > 0:
-            region_H, region_W = self.region_groups[0].shape
-            print(f"Region groups size: {region_H} x {region_W}")
-        
+        # 原有全局可视化目录（保留接口，方便你后面继续用）
+        frames_var_dir = os.path.join(save_folder, "frames_variance")
+        frames_var_overlay_dir = os.path.join(save_folder, "frames_overlay")
+        frames_mean_dir = os.path.join(save_folder, "frames_mean")
+        frames_mean_overlay_dir = os.path.join(save_folder, "frames_mean_overlay")
+        frames_winvar_dir = os.path.join(save_folder, "frames_window_variance")
+        frames_winvar_overlay_dir = os.path.join(save_folder, "frames_window_overlay")
+        winvar_npy_dir = os.path.join(save_folder, "window_variance_npy")
+
+        # 新增：两组逐帧图
+        pre_pool_dir = os.path.join(save_folder, "frames_pre_region_pool")
+        pre_pool_overlay_dir = os.path.join(save_folder, "frames_pre_region_pool_overlay")
+        perframe_mean_dir = os.path.join(save_folder, "frames_region_mean_per_frame")
+        perframe_mean_overlay_dir = os.path.join(save_folder, "frames_region_mean_per_frame_overlay")
+
+        for d in [
+            frames_var_dir,
+            frames_var_overlay_dir,
+            frames_mean_dir,
+            frames_mean_overlay_dir,
+            frames_winvar_dir,
+            frames_winvar_overlay_dir,
+            winvar_npy_dir,
+            pre_pool_dir,
+            pre_pool_overlay_dir,
+            perframe_mean_dir,
+            perframe_mean_overlay_dir,
+        ]:
+            os.makedirs(d, exist_ok=True)
+
+        # === 逐帧统计 object mean attention ===
+        object_attention_values = defaultdict(list)  # obj_id -> [att_t1, att_t2, ...]
+        frame_object_means = []  # list[frame_idx] -> {obj_id: mean_att}
+
+        # colormap（用 inferno）
+        inferno_cmap = cm.get_cmap("inferno")
+
         for frame_idx in range(len(self.region_groups)):
-            frame_means = {}
-            group_tensor = self.region_groups[frame_idx]
-            attention_map = attention_source[frame_idx]
-            
+            group_tensor = self.region_groups[frame_idx]          # [H_rg, W_rg] int labels
+            attention_map = attention_source[frame_idx]           # [H_att, W_att] float
+
+            # 设备对齐
             if group_tensor.device != attention_map.device:
                 attention_map = attention_map.to(group_tensor.device)
-            
+
+            # 将 region label 下采样到 attention 分辨率
             if group_tensor.shape != attention_map.shape:
-                group_tensor_resized = torch.nn.functional.interpolate(
+                group_resized = F.interpolate(
                     group_tensor.float().unsqueeze(0).unsqueeze(0),
-                    size=(attention_H, attention_W),
-                    mode='nearest'
+                    size=(H_att, W_att),
+                    mode="nearest",
                 ).squeeze(0).squeeze(0).long()
             else:
-                group_tensor_resized = group_tensor
-            
-            unique_objects = torch.unique(group_tensor_resized)
+                group_resized = group_tensor
+
+            unique_objects = torch.unique(group_resized)
             unique_objects = unique_objects[unique_objects != 0]
-            
+
+            frame_means = {}
+            frame_mean_lr = torch.zeros_like(attention_map)
+
             for obj_id in unique_objects:
-                obj_mask = (group_tensor_resized == obj_id)
-                if obj_mask.sum() > 0:
-                    mean_attention = attention_map[obj_mask].mean().item()
-                    object_attention_values[obj_id.item()].append(mean_attention)
-                    frame_means[obj_id.item()] = mean_attention
-            
+                obj_mask = (group_resized == obj_id)
+                if obj_mask.sum() == 0:
+                    continue
+                mean_attention = attention_map[obj_mask].mean().item()
+                obj_id_int = int(obj_id.item())
+                object_attention_values[obj_id_int].append(mean_attention)
+                frame_means[obj_id_int] = mean_attention
+                frame_mean_lr[obj_mask] = mean_attention
+
             frame_object_means.append(frame_means)
+
+            # ---------- (1) mean pooling 之前：高分辨率 attention map ----------
+            with torch.no_grad():
+                att_lr = attention_source[frame_idx].unsqueeze(0).unsqueeze(0)  # [1,1,H_att,W_att]
+                att_hr = F.interpolate(
+                    att_lr,
+                    size=(region_H, region_W),
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze().detach().cpu().numpy().astype(np.float32)
+
+            att_min, att_max = float(att_hr.min()), float(att_hr.max())
+            if att_max > att_min:
+                att_norm = (att_hr - att_min) / (att_max - att_min + 1e-6)
+            else:
+                att_norm = np.zeros_like(att_hr, dtype=np.float32)
+
+            att_color = inferno_cmap(att_norm)[..., :3]  # [H,W,3], float 0~1
+            att_color_u8 = (att_color * 255).astype(np.uint8)
+            att_color_bgr = cv2.cvtColor(att_color_u8, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(pre_pool_dir, f"frame_{frame_idx:04d}.png"), att_color_bgr)
+
+            # overlay 在原始图像上
+            if hasattr(self, "imgs") and self.imgs is not None:
+                img_rgb = (self.imgs[frame_idx] * 255).astype(np.uint8)  # [H,W,3] RGB
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                overlay = cv2.addWeighted(img_bgr, 0.6, att_color_bgr, 0.4, 0)
+                cv2.putText(
+                    overlay,
+                    f"pre-pool att | frame {frame_idx+1}/{len(self.region_groups)}",
+                    (12, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.imwrite(
+                    os.path.join(pre_pool_overlay_dir, f"frame_{frame_idx:04d}.png"),
+                    overlay,
+                )
+
+            # ---------- (2) group region mean pool 后、跨帧 mean 前的逐帧 dynamic map ----------
+            mean_map_hr = np.zeros((region_H, region_W), dtype=np.float32)
+            group_np = self.region_groups[frame_idx].detach().cpu().numpy()
+
+            for obj_id, m_val in frame_means.items():
+                mean_map_hr[group_np == obj_id] = float(m_val)
+
+            mm_min, mm_max = float(mean_map_hr.min()), float(mean_map_hr.max())
+            if mm_max > mm_min:
+                mm_norm = (mean_map_hr - mm_min) / (mm_max - mm_min + 1e-6)
+            else:
+                mm_norm = np.zeros_like(mean_map_hr, dtype=np.float32)
+
+            mm_color = inferno_cmap(mm_norm)[..., :3]
+            mm_color_u8 = (mm_color * 255).astype(np.uint8)
+            mm_color_bgr = cv2.cvtColor(mm_color_u8, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(
+                os.path.join(perframe_mean_dir, f"frame_{frame_idx:04d}.png"),
+                mm_color_bgr,
+            )
+
+            if hasattr(self, "imgs") and self.imgs is not None:
+                img_rgb = (self.imgs[frame_idx] * 255).astype(np.uint8)
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                overlay_mean = cv2.addWeighted(img_bgr, 0.6, mm_color_bgr, 0.4, 0)
+                cv2.putText(
+                    overlay_mean,
+                    f"region mean att | frame {frame_idx+1}/{len(self.region_groups)}",
+                    (12, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.imwrite(
+                    os.path.join(perframe_mean_overlay_dir, f"frame_{frame_idx:04d}.png"),
+                    overlay_mean,
+                )
+
+        # === 全局上，计算每个 object 的方差和均值（保留原有接口返回） ===
+        object_variances = {}
+        object_means = {}
+        for obj_id, vals in object_attention_values.items():
+            vals_arr = np.array(vals, dtype=np.float32)
+            if len(vals_arr) >= 2:
+                object_variances[obj_id] = float(np.var(vals_arr))
+                object_means[obj_id] = float(np.mean(vals_arr))
+            elif len(vals_arr) == 1:
+                object_variances[obj_id] = 0.0
+                object_means[obj_id] = float(vals_arr[0])
+            else:
+                object_variances[obj_id] = 0.0
+                object_means[obj_id] = 0.0
         
         # ========== 计算全局方差和均值 ==========
         object_variances = {}
@@ -3095,6 +3267,7 @@ class BasePCOptimizer (nn.Module):
         print(f"  - CSV and text summaries")
         
         return object_variances, object_attention_values
+    
 def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-3, temporal_smoothing_weight=0, depth_map_save_dir=None):
     params = [p for p in net.parameters() if p.requires_grad]
     if not params:
@@ -3152,14 +3325,14 @@ def global_alignment_iter(net, cur_iter, niter, lr_base, lr_min, optimizer, sche
 
     if net.empty_cache:
         torch.cuda.empty_cache()
-    
+    _mem_cuda(f"opt/iter{cur_iter}: before net()", device=next(net.parameters()).device)
     loss = net(epoch=cur_iter)
-    
+    _mem_cuda(f"opt/iter{cur_iter}: after net() before backward", device=next(net.parameters()).device)
     if net.empty_cache:
         torch.cuda.empty_cache()
     
     loss.backward()
-    
+    _mem_cuda(f"opt/iter{cur_iter}: after backward", device=next(net.parameters()).device)
     if net.empty_cache:
         torch.cuda.empty_cache()
     

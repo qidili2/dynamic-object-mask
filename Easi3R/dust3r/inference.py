@@ -11,6 +11,26 @@ from dust3r.utils.image import rgb
 
 import numpy as np
 import torch
+import os, psutil
+proc = psutil.Process(os.getpid())
+
+
+def _cast_floats_to_fp16(obj):
+    """Recursively cast floating-point torch tensors to fp16.
+    Leaves ints/bools/strings unchanged.
+    """
+    if torch.is_tensor(obj):
+        # Only cast floating types
+        if obj.dtype in (torch.float32, torch.float64, torch.bfloat16):
+            return obj.to(dtype=torch.float16)
+        return obj
+    if isinstance(obj, dict):
+        return {k: _cast_floats_to_fp16(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        t = [_cast_floats_to_fp16(v) for v in obj]
+        return type(obj)(t)
+    return obj
+
 
 def _interleave_imgs(img1, img2):
     res = {}
@@ -91,13 +111,15 @@ def inference(pairs, model, device, batch_size=8, verbose=True):
         batch_size = 1
 
     for i in tqdm.trange(0, len(pairs), batch_size, disable=not verbose):
-
+        if (i // batch_size) % 50 == 0:
+            print("[MEM]", proc.memory_info().rss/1024**3, "GB", "len(result)=", len(result))
         res = loss_of_one_batch(collate_with_cat(pairs[i:i+batch_size]), model, None, device)
-
+        res = _cast_floats_to_fp16(res)
         result.append(to_cpu(res))
 
+    print("[MEM] before collate", proc.memory_info().rss/1024**3, "GB", "len=", len(result))
     result = collate_with_cat(result, lists=multiple_shapes)
-
+    print("[MEM] after collate", proc.memory_info().rss/1024**3, "GB")
     return result
 
 
